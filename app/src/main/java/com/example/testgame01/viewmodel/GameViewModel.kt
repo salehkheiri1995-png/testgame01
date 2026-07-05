@@ -20,6 +20,7 @@ class GameViewModel : ViewModel() {
     val state: StateFlow<GameState> = _state.asStateFlow()
 
     private var gameLoopJob: Job? = null
+    private var activationJob: Job? = null
     private var idCounter = 0
     private val ballRadius = 22f
     private val cols = 6
@@ -27,7 +28,10 @@ class GameViewModel : ViewModel() {
     private val topBarHeight = 120f
     private val bottomBarHeight = 160f
 
-    // Track last canvas size to avoid re-init on every recomposition
+    // Total balls that will be launched this turn (used to track allReturned correctly)
+    private var totalBallsToLaunch = 0
+    private var ballsActivated = 0
+
     private var lastKnownSize = Size.Zero
 
     fun onCanvasReady(size: Size) {
@@ -82,6 +86,7 @@ class GameViewModel : ViewModel() {
         var normX = dir.x / len
         var normY = dir.y / len
 
+        // Force upward direction
         if (normY >= 0) normY = -0.05f
 
         val minSin = sin(Math.toRadians(10.0)).toFloat()
@@ -99,6 +104,10 @@ class GameViewModel : ViewModel() {
 
     private fun launchBalls(direction: Offset) {
         val s = _state.value
+        totalBallsToLaunch = s.ballCount
+        ballsActivated = 0
+
+        // Create all balls inactive first
         val balls = (0 until s.ballCount).map { i ->
             Ball(
                 id = i,
@@ -109,15 +118,21 @@ class GameViewModel : ViewModel() {
             )
         }
         _state.update { it.copy(balls = balls, phase = GamePhase.Shooting, aimDirection = Offset.Zero) }
+
+        // Start game loop BEFORE activating balls
         startGameLoop()
-        viewModelScope.launch {
-            balls.forEachIndexed { index, _ ->
-                delay(index * 100L)
+
+        // Activate balls one by one with stagger delay
+        activationJob?.cancel()
+        activationJob = viewModelScope.launch {
+            for (index in balls.indices) {
+                delay(index * 120L)
                 _state.update { gs ->
                     gs.copy(balls = gs.balls.mapIndexed { i, b ->
                         if (i == index) b.copy(isActive = true) else b
                     })
                 }
+                ballsActivated++
             }
         }
     }
@@ -137,9 +152,9 @@ class GameViewModel : ViewModel() {
     private fun tickUpdate() {
         val s = _state.value
         if (s.phase != GamePhase.Shooting) return
+        if (s.canvasSize == Size.Zero) return
 
         val canvasW = s.canvasSize.width
-        val canvasH = s.canvasSize.height
         val blockSize = blockSizeFor(canvasW)
 
         var newBlocks = s.blocks.toMutableList()
@@ -151,10 +166,21 @@ class GameViewModel : ViewModel() {
             var pos = ball.position
             var vel = ball.velocity
 
-            if (pos.x - ballRadius <= 0f) { vel = vel.copy(x = abs(vel.x)); pos = pos.copy(x = ballRadius) }
-            if (pos.x + ballRadius >= canvasW) { vel = vel.copy(x = -abs(vel.x)); pos = pos.copy(x = canvasW - ballRadius) }
-            if (pos.y - ballRadius <= topBarHeight) { vel = vel.copy(y = abs(vel.y)); pos = pos.copy(y = topBarHeight + ballRadius) }
+            // Wall bouncing
+            if (pos.x - ballRadius <= 0f) {
+                vel = vel.copy(x = abs(vel.x))
+                pos = pos.copy(x = ballRadius)
+            }
+            if (pos.x + ballRadius >= canvasW) {
+                vel = vel.copy(x = -abs(vel.x))
+                pos = pos.copy(x = canvasW - ballRadius)
+            }
+            if (pos.y - ballRadius <= topBarHeight) {
+                vel = vel.copy(y = abs(vel.y))
+                pos = pos.copy(y = topBarHeight + ballRadius)
+            }
 
+            // Block collision
             for (i in newBlocks.indices) {
                 val blk = newBlocks[i]
                 if (blk.isDestroyed) continue
@@ -169,21 +195,32 @@ class GameViewModel : ViewModel() {
                 }
             }
 
+            // Move ball
             pos = Offset(pos.x + vel.x, pos.y + vel.y)
 
+            // Check if returned to bottom
             val returned = pos.y + ballRadius >= s.ballLaunchOrigin.y
             if (returned) {
-                return@map ball.copy(position = s.ballLaunchOrigin, velocity = vel, isReturned = true)
+                return@map ball.copy(
+                    position = s.ballLaunchOrigin,
+                    velocity = vel,
+                    isReturned = true
+                )
             }
 
             ball.copy(position = pos, velocity = vel)
         }
 
-        val allReturned = updatedBalls.all { !it.isActive || it.isReturned }
         val newScore = s.score + scoreGained
         val filteredBlocks = newBlocks.filter { !it.isDestroyed }
 
-        if (allReturned && s.balls.isNotEmpty()) {
+        // Only end turn when ALL balls that were supposed to launch have returned
+        // A ball that is still isActive=false hasn't been launched yet - don't count it as done
+        val activeBalls = updatedBalls.filter { it.isActive }
+        val allActiveBallsReturned = activeBalls.isNotEmpty() && activeBalls.all { it.isReturned }
+        val allBallsLaunched = ballsActivated >= totalBallsToLaunch
+
+        if (allActiveBallsReturned && allBallsLaunched) {
             endTurn(filteredBlocks, newScore)
         } else {
             _state.update { it.copy(balls = updatedBalls, blocks = filteredBlocks, score = newScore) }
@@ -191,7 +228,11 @@ class GameViewModel : ViewModel() {
     }
 
     private fun endTurn(remainingBlocks: List<Block>, newScore: Int) {
+        activationJob?.cancel()
         gameLoopJob?.cancel()
+        ballsActivated = 0
+        totalBallsToLaunch = 0
+
         val s = _state.value
         val canvasW = s.canvasSize.width
         val newBallCount = s.ballCount + 1
@@ -272,8 +313,11 @@ class GameViewModel : ViewModel() {
     }
 
     fun restartGame() {
+        activationJob?.cancel()
         gameLoopJob?.cancel()
         idCounter = 0
+        ballsActivated = 0
+        totalBallsToLaunch = 0
         lastKnownSize = Size.Zero
         val size = _state.value.canvasSize
         val origin = Offset(size.width / 2f, size.height - bottomBarHeight)
