@@ -1,6 +1,5 @@
 package com.example.testgame01.ui
 
-import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -15,7 +14,6 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -43,6 +41,7 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
         modifier = Modifier
             .fillMaxSize()
             .background(BackgroundColor)
+            .systemBarsPadding()
     ) {
         Canvas(
             modifier = Modifier
@@ -55,10 +54,13 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
                     )
                 }
         ) {
-            // Notify ViewModel of canvas size
-            viewModel.onCanvasReady(this.size)
+            val canvasSize = this.size
+            // Notify ViewModel of canvas size only when size is valid
+            if (canvasSize.width > 0f && canvasSize.height > 0f) {
+                viewModel.onCanvasReady(canvasSize)
+            }
 
-            val canvasW = this.size.width
+            val canvasW = canvasSize.width
             val blockSize = viewModel.blockSizePublic(canvasW)
 
             // Background
@@ -72,10 +74,10 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
 
             // Draw aim line
             if (state.phase == GamePhase.Aiming && state.aimDirection != Offset.Zero) {
-                drawAimLine(state.ballLaunchOrigin, state.aimDirection, this.size)
+                drawAimLine(state.ballLaunchOrigin, state.aimDirection, canvasSize)
             }
 
-            // Draw balls
+            // Draw active balls
             state.balls.forEach { ball ->
                 if (ball.isActive && !ball.isReturned) {
                     drawCircle(
@@ -83,7 +85,6 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
                         radius = viewModel.ballRadiusPublic,
                         center = ball.position
                     )
-                    // Glow effect
                     drawCircle(
                         brush = Brush.radialGradient(
                             colors = listOf(Color(0x44FFFFFF), Color.Transparent),
@@ -97,7 +98,9 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
             }
 
             // Draw idle ball at origin
-            if (state.phase == GamePhase.Idle || state.phase == GamePhase.Aiming) {
+            if (state.ballLaunchOrigin != Offset.Zero &&
+                (state.phase == GamePhase.Idle || state.phase == GamePhase.Aiming)
+            ) {
                 drawCircle(BallColor, viewModel.ballRadiusPublic, state.ballLaunchOrigin)
                 drawCircle(
                     brush = Brush.radialGradient(
@@ -135,7 +138,6 @@ fun DrawScope.drawBlock(
     measurer: androidx.compose.ui.text.TextMeasurer,
     alpha: Float = 1f
 ) {
-    // Block fill with gradient
     drawRect(
         brush = Brush.verticalGradient(
             colors = listOf(color.copy(alpha = alpha), color.copy(alpha = alpha * 0.7f)),
@@ -143,18 +145,14 @@ fun DrawScope.drawBlock(
             endY = rect.bottom
         ),
         topLeft = Offset(rect.left, rect.top),
-        size = Size(rect.width, rect.height),
-        alpha = alpha
+        size = Size(rect.width, rect.height)
     )
-    // Border
     drawRect(
         color = Color.White.copy(alpha = 0.25f * alpha),
         topLeft = Offset(rect.left, rect.top),
         size = Size(rect.width, rect.height),
-        style = Stroke(width = 1.5f),
-        alpha = alpha
+        style = Stroke(width = 1.5f)
     )
-    // HP text
     val measured = measurer.measure(
         text = label,
         style = TextStyle(
@@ -176,6 +174,7 @@ fun DrawScope.drawBlock(
 
 fun DrawScope.drawAimLine(origin: Offset, direction: Offset, canvasSize: Size) {
     val len = sqrt(direction.x * direction.x + direction.y * direction.y)
+    if (len == 0f) return
     val normX = direction.x / len
     val normY = direction.y / len
 
@@ -213,7 +212,7 @@ fun TopHud(score: Int, ballCount: Int, turn: Int) {
     ) {
         HudItem(label = "SCORE", value = score.toString())
         HudItem(label = "TURN", value = turn.toString())
-        HudItem(label = "BALLS", value = "● x$ballCount")
+        HudItem(label = "BALLS", value = "\u25CF x$ballCount")
     }
 }
 

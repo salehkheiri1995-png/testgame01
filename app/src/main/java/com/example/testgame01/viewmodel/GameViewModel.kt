@@ -27,13 +27,16 @@ class GameViewModel : ViewModel() {
     private val topBarHeight = 120f
     private val bottomBarHeight = 160f
 
-    // ---- Canvas setup ----
+    // Track last canvas size to avoid re-init on every recomposition
+    private var lastKnownSize = Size.Zero
 
     fun onCanvasReady(size: Size) {
-        if (_state.value.canvasSize == size) return
+        if (size == lastKnownSize) return
+        lastKnownSize = size
         val origin = Offset(size.width / 2f, size.height - bottomBarHeight)
+        val wasEmpty = _state.value.blocks.isEmpty()
         _state.update { it.copy(canvasSize = size, ballLaunchOrigin = origin) }
-        if (_state.value.blocks.isEmpty()) {
+        if (wasEmpty) {
             spawnInitialBlocks(size)
         }
     }
@@ -73,21 +76,14 @@ class GameViewModel : ViewModel() {
 
     private fun clampToValidAngle(dir: Offset): Offset {
         if (dir.x == 0f && dir.y == 0f) return Offset.Zero
-        val angleRad = atan2(dir.y.toDouble(), dir.x.toDouble())
-        val angleDeg = Math.toDegrees(angleRad)
-        // Only allow shooting upward: angle between 190 and 350 degrees (relative to right)
-        // Equivalent to: the vector must have y < 0 (pointing up)
-        // We limit to 10..170 degrees from top (i.e. vy must be < 0)
         val len = sqrt(dir.x * dir.x + dir.y * dir.y)
-        if (len < 20f) return Offset.Zero // too short gesture
+        if (len < 20f) return Offset.Zero
 
         var normX = dir.x / len
         var normY = dir.y / len
 
-        // Must point upward
         if (normY >= 0) normY = -0.05f
 
-        // Clamp horizontal angle so not perfectly horizontal (10 deg margin)
         val minSin = sin(Math.toRadians(10.0)).toFloat()
         if (abs(normY) < minSin) {
             normY = if (normY < 0) -minSin else minSin
@@ -114,7 +110,6 @@ class GameViewModel : ViewModel() {
         }
         _state.update { it.copy(balls = balls, phase = GamePhase.Shooting, aimDirection = Offset.Zero) }
         startGameLoop()
-        // Launch balls sequentially
         viewModelScope.launch {
             balls.forEachIndexed { index, _ ->
                 delay(index * 100L)
@@ -156,12 +151,10 @@ class GameViewModel : ViewModel() {
             var pos = ball.position
             var vel = ball.velocity
 
-            // Wall collisions
             if (pos.x - ballRadius <= 0f) { vel = vel.copy(x = abs(vel.x)); pos = pos.copy(x = ballRadius) }
             if (pos.x + ballRadius >= canvasW) { vel = vel.copy(x = -abs(vel.x)); pos = pos.copy(x = canvasW - ballRadius) }
             if (pos.y - ballRadius <= topBarHeight) { vel = vel.copy(y = abs(vel.y)); pos = pos.copy(y = topBarHeight + ballRadius) }
 
-            // Block collisions
             for (i in newBlocks.indices) {
                 val blk = newBlocks[i]
                 if (blk.isDestroyed) continue
@@ -171,7 +164,6 @@ class GameViewModel : ViewModel() {
                     scoreGained++
                     newBlocks[i] = if (newHp <= 0) blk.copy(hp = 0, isDestroyed = true)
                     else blk.copy(hp = newHp)
-                    // Reflect based on collision side
                     vel = reflectBall(vel, pos, bRect)
                     break
                 }
@@ -179,7 +171,6 @@ class GameViewModel : ViewModel() {
 
             pos = Offset(pos.x + vel.x, pos.y + vel.y)
 
-            // Bottom: ball returned
             val returned = pos.y + ballRadius >= s.ballLaunchOrigin.y
             if (returned) {
                 return@map ball.copy(position = s.ballLaunchOrigin, velocity = vel, isReturned = true)
@@ -193,7 +184,6 @@ class GameViewModel : ViewModel() {
         val filteredBlocks = newBlocks.filter { !it.isDestroyed }
 
         if (allReturned && s.balls.isNotEmpty()) {
-            // End of turn
             endTurn(filteredBlocks, newScore)
         } else {
             _state.update { it.copy(balls = updatedBalls, blocks = filteredBlocks, score = newScore) }
@@ -207,10 +197,8 @@ class GameViewModel : ViewModel() {
         val newBallCount = s.ballCount + 1
         val newTurn = s.turn + 1
 
-        // Move blocks down by 1 row
         val movedBlocks = remainingBlocks.map { it.copy(row = it.row + 1) }
 
-        // Check game over: any block at row >= maxRow
         val blockSize = blockSizeFor(canvasW)
         val maxRow = ((s.canvasSize.height - topBarHeight - bottomBarHeight) / (blockSize.height + blockPadding)).toInt()
         if (movedBlocks.any { it.row >= maxRow }) {
@@ -218,7 +206,6 @@ class GameViewModel : ViewModel() {
             return
         }
 
-        // Add new row at row=0
         val newRow = generateRow(s.canvasSize, row = 0, currentBallCount = newBallCount)
         val allBlocks = newRow + movedBlocks
 
@@ -287,6 +274,7 @@ class GameViewModel : ViewModel() {
     fun restartGame() {
         gameLoopJob?.cancel()
         idCounter = 0
+        lastKnownSize = Size.Zero
         val size = _state.value.canvasSize
         val origin = Offset(size.width / 2f, size.height - bottomBarHeight)
         _state.value = GameState(
