@@ -37,11 +37,11 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
     val state by viewModel.state.collectAsState()
     val measurer = rememberTextMeasurer()
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(BackgroundColor)
-            .systemBarsPadding()
+            .windowInsetsPadding(WindowInsets.systemBars)
     ) {
         Canvas(
             modifier = Modifier
@@ -54,74 +54,48 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
                     )
                 }
         ) {
-            val canvasSize = this.size
-            // Notify ViewModel of canvas size only when size is valid
-            if (canvasSize.width > 0f && canvasSize.height > 0f) {
-                viewModel.onCanvasReady(canvasSize)
+            val sz = this.size
+            if (sz.width > 0f && sz.height > 0f) {
+                viewModel.onCanvasReady(sz)
             }
 
-            val canvasW = canvasSize.width
+            val canvasW = sz.width
             val blockSize = viewModel.blockSizePublic(canvasW)
 
-            // Background
+            // Dark background
             drawRect(BackgroundColor)
 
-            // Draw blocks
+            // Blocks
             state.blocks.forEach { block ->
                 val rect = viewModel.blockRect(block, canvasW, blockSize)
                 drawBlock(block.color, rect, block.hp.toString(), measurer, block.alpha)
             }
 
-            // Draw aim line
+            // Aim line
             if (state.phase == GamePhase.Aiming && state.aimDirection != Offset.Zero) {
-                drawAimLine(state.ballLaunchOrigin, state.aimDirection, canvasSize)
+                drawAimLine(state.ballLaunchOrigin, state.aimDirection)
             }
 
-            // Draw active balls
+            // Active balls
             state.balls.forEach { ball ->
                 if (ball.isActive && !ball.isReturned) {
-                    drawCircle(
-                        color = BallColor,
-                        radius = viewModel.ballRadiusPublic,
-                        center = ball.position
-                    )
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(Color(0x44FFFFFF), Color.Transparent),
-                            center = ball.position,
-                            radius = viewModel.ballRadiusPublic * 2.5f
-                        ),
-                        radius = viewModel.ballRadiusPublic * 2.5f,
-                        center = ball.position
-                    )
+                    drawBall(ball.position, viewModel.ballRadiusPublic)
                 }
             }
 
-            // Draw idle ball at origin
+            // Idle ball
             if (state.ballLaunchOrigin != Offset.Zero &&
-                (state.phase == GamePhase.Idle || state.phase == GamePhase.Aiming)
-            ) {
-                drawCircle(BallColor, viewModel.ballRadiusPublic, state.ballLaunchOrigin)
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(Color(0x44FFFFFF), Color.Transparent),
-                        center = state.ballLaunchOrigin,
-                        radius = viewModel.ballRadiusPublic * 2.5f
-                    ),
-                    radius = viewModel.ballRadiusPublic * 2.5f,
-                    center = state.ballLaunchOrigin
-                )
+                (state.phase == GamePhase.Idle || state.phase == GamePhase.Aiming)) {
+                drawBall(state.ballLaunchOrigin, viewModel.ballRadiusPublic)
             }
         }
 
-        // Top HUD
         TopHud(
             score = state.score,
             ballCount = state.ballCount,
             turn = state.turn
         )
 
-        // Game Over overlay
         if (state.phase == GamePhase.GameOver) {
             GameOverScreen(
                 score = state.score,
@@ -129,6 +103,19 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
             )
         }
     }
+}
+
+fun DrawScope.drawBall(center: Offset, radius: Float) {
+    drawCircle(color = BallColor, radius = radius, center = center)
+    drawCircle(
+        brush = Brush.radialGradient(
+            colors = listOf(Color(0x44FFFFFF), Color.Transparent),
+            center = center,
+            radius = radius * 2.5f
+        ),
+        radius = radius * 2.5f,
+        center = center
+    )
 }
 
 fun DrawScope.drawBlock(
@@ -172,18 +159,16 @@ fun DrawScope.drawBlock(
     )
 }
 
-fun DrawScope.drawAimLine(origin: Offset, direction: Offset, canvasSize: Size) {
+fun DrawScope.drawAimLine(origin: Offset, direction: Offset) {
     val len = sqrt(direction.x * direction.x + direction.y * direction.y)
     if (len == 0f) return
     val normX = direction.x / len
     val normY = direction.y / len
-
     val dashLength = 14f
     val gapLength = 8f
     var traveled = 0f
     var current = origin
     val maxTravel = 350f
-
     while (traveled < maxTravel) {
         val endX = current.x + normX * dashLength
         val endY = current.y + normY * dashLength
@@ -263,9 +248,7 @@ fun GameOverScreen(score: Int, onRestart: () -> Unit) {
             Spacer(modifier = Modifier.height(8.dp))
             Button(
                 onClick = onRestart,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF4CAF50)
-                ),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50)),
                 modifier = Modifier
                     .padding(horizontal = 32.dp)
                     .fillMaxWidth(0.6f)
