@@ -22,13 +22,13 @@ class GameViewModel : ViewModel() {
     private var gameLoopJob: Job? = null
     private var activationJob: Job? = null
     private var idCounter = 0
-    private val ballRadius = 22f
+    val ballRadiusPublic = 22f
+    private val ballRadius = ballRadiusPublic
     private val cols = 6
     private val blockPadding = 8f
     private val topBarHeight = 120f
     private val bottomBarHeight = 160f
 
-    // Total balls that will be launched this turn (used to track allReturned correctly)
     private var totalBallsToLaunch = 0
     private var ballsActivated = 0
 
@@ -54,7 +54,8 @@ class GameViewModel : ViewModel() {
 
     fun onDragStart(position: Offset) {
         val s = _state.value
-        if (s.phase != GamePhase.Idle && s.phase != GamePhase.Aiming) return
+        // Only allow aiming in Idle phase
+        if (s.phase != GamePhase.Idle) return
         _state.update { it.copy(phase = GamePhase.Aiming) }
     }
 
@@ -62,6 +63,7 @@ class GameViewModel : ViewModel() {
         val s = _state.value
         if (s.phase != GamePhase.Aiming) return
         val origin = s.ballLaunchOrigin
+        // direction = from launch origin toward touch position
         val raw = Offset(position.x - origin.x, position.y - origin.y)
         val clamped = clampToValidAngle(raw)
         _state.update { it.copy(aimDirection = clamped) }
@@ -81,13 +83,14 @@ class GameViewModel : ViewModel() {
     private fun clampToValidAngle(dir: Offset): Offset {
         if (dir.x == 0f && dir.y == 0f) return Offset.Zero
         val len = sqrt(dir.x * dir.x + dir.y * dir.y)
-        if (len < 20f) return Offset.Zero
+        // Minimum drag distance to register aim
+        if (len < 15f) return Offset.Zero
 
         var normX = dir.x / len
         var normY = dir.y / len
 
-        // Force upward direction
-        if (normY >= 0) normY = -0.05f
+        // Force upward direction (negative Y in screen coords)
+        if (normY >= 0f) normY = -0.05f
 
         val minSin = sin(Math.toRadians(10.0)).toFloat()
         if (abs(normY) < minSin) {
@@ -107,7 +110,6 @@ class GameViewModel : ViewModel() {
         totalBallsToLaunch = s.ballCount
         ballsActivated = 0
 
-        // Create all balls inactive first
         val balls = (0 until s.ballCount).map { i ->
             Ball(
                 id = i,
@@ -117,16 +119,17 @@ class GameViewModel : ViewModel() {
                 isReturned = false
             )
         }
-        _state.update { it.copy(balls = balls, phase = GamePhase.Shooting, aimDirection = Offset.Zero) }
 
-        // Start game loop BEFORE activating balls
+        _state.update {
+            it.copy(balls = balls, phase = GamePhase.Shooting, aimDirection = Offset.Zero)
+        }
+
         startGameLoop()
 
-        // Activate balls one by one with stagger delay
         activationJob?.cancel()
         activationJob = viewModelScope.launch {
             for (index in balls.indices) {
-                delay(index * 120L)
+                delay(if (index == 0) 0L else index * 120L)
                 _state.update { gs ->
                     gs.copy(balls = gs.balls.mapIndexed { i, b ->
                         if (i == index) b.copy(isActive = true) else b
@@ -157,7 +160,7 @@ class GameViewModel : ViewModel() {
         val canvasW = s.canvasSize.width
         val blockSize = blockSizeFor(canvasW)
 
-        var newBlocks = s.blocks.toMutableList()
+        val newBlocks = s.blocks.toMutableList()
         var scoreGained = 0
 
         val updatedBalls = s.balls.map { ball ->
@@ -195,10 +198,10 @@ class GameViewModel : ViewModel() {
                 }
             }
 
-            // Move ball
+            // Move ball forward
             pos = Offset(pos.x + vel.x, pos.y + vel.y)
 
-            // Check if returned to bottom
+            // Return check
             val returned = pos.y + ballRadius >= s.ballLaunchOrigin.y
             if (returned) {
                 return@map ball.copy(
@@ -214,8 +217,7 @@ class GameViewModel : ViewModel() {
         val newScore = s.score + scoreGained
         val filteredBlocks = newBlocks.filter { !it.isDestroyed }
 
-        // Only end turn when ALL balls that were supposed to launch have returned
-        // A ball that is still isActive=false hasn't been launched yet - don't count it as done
+        // End turn only when every ball has been launched AND returned
         val activeBalls = updatedBalls.filter { it.isActive }
         val allActiveBallsReturned = activeBalls.isNotEmpty() && activeBalls.all { it.isReturned }
         val allBallsLaunched = ballsActivated >= totalBallsToLaunch
@@ -239,9 +241,10 @@ class GameViewModel : ViewModel() {
         val newTurn = s.turn + 1
 
         val movedBlocks = remainingBlocks.map { it.copy(row = it.row + 1) }
-
         val blockSize = blockSizeFor(canvasW)
-        val maxRow = ((s.canvasSize.height - topBarHeight - bottomBarHeight) / (blockSize.height + blockPadding)).toInt()
+        val maxRow = ((s.canvasSize.height - topBarHeight - bottomBarHeight) /
+                      (blockSize.height + blockPadding)).toInt()
+
         if (movedBlocks.any { it.row >= maxRow }) {
             _state.update { it.copy(blocks = movedBlocks, score = newScore, phase = GamePhase.GameOver) }
             return
@@ -300,7 +303,10 @@ class GameViewModel : ViewModel() {
         return dx * dx + dy * dy <= radius * radius
     }
 
-    private fun reflectBall(vel: Offset, ballPos: Offset, rect: androidx.compose.ui.geometry.Rect): Offset {
+    private fun reflectBall(
+        vel: Offset, ballPos: Offset,
+        rect: androidx.compose.ui.geometry.Rect
+    ): Offset {
         val fromTop = abs(ballPos.y - rect.top)
         val fromBottom = abs(ballPos.y - rect.bottom)
         val fromLeft = abs(ballPos.x - rect.left)
@@ -327,6 +333,4 @@ class GameViewModel : ViewModel() {
         )
         if (size != Size.Zero) spawnInitialBlocks(size)
     }
-
-    val ballRadiusPublic get() = ballRadius
 }

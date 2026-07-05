@@ -2,7 +2,6 @@ package com.example.testgame01.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -14,7 +13,10 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.awaitEachGesture
+import androidx.compose.ui.input.pointer.awaitFirstDown
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
@@ -46,12 +48,31 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(state.phase) {
-                    detectDragGestures(
-                        onDragStart = { viewModel.onDragStart(it) },
-                        onDrag = { change, _ -> viewModel.onDrag(change.position) },
-                        onDragEnd = { viewModel.onDragEnd() }
-                    )
+                // Use Unit as key so gesture handler is NEVER restarted mid-game
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        // Wait for first finger down
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        viewModel.onDragStart(down.position)
+
+                        // Track drag until finger lifts
+                        var isDragging = true
+                        while (isDragging) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull() ?: break
+
+                            when (event.type) {
+                                PointerEventType.Move -> {
+                                    viewModel.onDrag(change.position)
+                                    change.consume()
+                                }
+                                PointerEventType.Release -> {
+                                    viewModel.onDragEnd()
+                                    isDragging = false
+                                }
+                            }
+                        }
+                    }
                 }
         ) {
             val sz = this.size
@@ -83,7 +104,7 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
                 }
             }
 
-            // Idle ball
+            // Idle ball at launch origin
             if (state.ballLaunchOrigin != Offset.Zero &&
                 (state.phase == GamePhase.Idle || state.phase == GamePhase.Aiming)) {
                 drawBall(state.ballLaunchOrigin, viewModel.ballRadiusPublic)
@@ -178,7 +199,7 @@ fun DrawScope.drawAimLine(origin: Offset, direction: Offset) {
             start = current,
             end = Offset(endX, endY),
             strokeWidth = 3f,
-            cap = StrokeCap.Round
+            cap = androidx.compose.ui.graphics.StrokeCap.Round
         )
         current = Offset(endX + normX * gapLength, endY + normY * gapLength)
         traveled += dashLength + gapLength
