@@ -2,6 +2,7 @@ package com.example.testgame01.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -13,10 +14,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.awaitEachGesture
-import androidx.compose.ui.input.pointer.awaitFirstDown
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
@@ -48,31 +46,22 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
-                // Use Unit as key so gesture handler is NEVER restarted mid-game
                 .pointerInput(Unit) {
-                    awaitEachGesture {
-                        // Wait for first finger down
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        viewModel.onDragStart(down.position)
-
-                        // Track drag until finger lifts
-                        var isDragging = true
-                        while (isDragging) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull() ?: break
-
-                            when (event.type) {
-                                PointerEventType.Move -> {
-                                    viewModel.onDrag(change.position)
-                                    change.consume()
-                                }
-                                PointerEventType.Release -> {
-                                    viewModel.onDragEnd()
-                                    isDragging = false
-                                }
-                            }
+                    detectDragGestures(
+                        onDragStart = { offset ->
+                            viewModel.onDragStart(offset)
+                        },
+                        onDrag = { change, _ ->
+                            change.consume()
+                            viewModel.onDrag(change.position)
+                        },
+                        onDragEnd = {
+                            viewModel.onDragEnd()
+                        },
+                        onDragCancel = {
+                            viewModel.onDragEnd()
                         }
-                    }
+                    )
                 }
         ) {
             val sz = this.size
