@@ -1,25 +1,25 @@
 package com.example.testgame01.model
 
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import kotlin.random.Random
 
-data class Block(
+data class Ball(
     val id: Int,
+    val position: Offset,
+    val velocity: Offset,
+    val isMoving: Boolean = false,
+    val isReturned: Boolean = false
+)
+
+data class Block(
+    val id: String,
     val hp: Int,
+    val maxHp: Int,
     val col: Int,
     val row: Int,
     val isDestroyed: Boolean = false,
-    val color: Color = randomBlockColor(),
-    val alpha: Float = 1f
-)
-
-data class Ball(
-    val id: Int,
-    val position: androidx.compose.ui.geometry.Offset,
-    val velocity: androidx.compose.ui.geometry.Offset,  // unit direction vector
-    val isActive: Boolean = true,
-    val isReturned: Boolean = false,
-    val launchDelaySeconds: Float = 0f                  // seconds before this ball activates
+    val color: Color = randomBlockColor()
 )
 
 enum class GamePhase { Idle, Aiming, Shooting, GameOver }

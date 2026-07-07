@@ -12,5 +12,8 @@ data class GameState(
     val aimDirection: Offset = Offset.Zero,
     val ballLaunchOrigin: Offset = Offset.Zero,
     val canvasSize: Size = Size.Zero,
-    val turn: Int = 1
+    val turn: Int = 1,
+    // multi-ball stagger
+    val ballsToLaunchLeft: Int = 0,
+    val launchDelayCounter: Int = 0
 )

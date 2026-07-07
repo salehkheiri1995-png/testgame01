@@ -25,7 +25,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.testgame01.model.GamePhase
 import com.example.testgame01.viewmodel.GameViewModel
-import kotlinx.coroutines.isActive
+import kotlinx.coroutines.delay
 import kotlin.math.sqrt
 
 private val BackgroundColor = Color(0xFF1A1A2E)
@@ -38,20 +38,12 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
     val state by viewModel.state.collectAsState()
     val measurer = rememberTextMeasurer()
 
-    // ---- Game loop: delta-time based so speed is frame-rate independent ----
+    // Game loop: exactly like Ballz — delay(16L) every tick
     LaunchedEffect(state.phase) {
         if (state.phase == GamePhase.Shooting) {
-            var lastFrameNanos = -1L
-            while (isActive && viewModel.state.value.phase == GamePhase.Shooting) {
-                withFrameNanos { frameNanos ->
-                    val dt = if (lastFrameNanos < 0L) {
-                        1f / 60f
-                    } else {
-                        ((frameNanos - lastFrameNanos) / 1_000_000_000f).coerceIn(0.001f, 0.05f)
-                    }
-                    lastFrameNanos = frameNanos
-                    viewModel.tick(dt)
-                }
+            while (viewModel.state.value.phase == GamePhase.Shooting) {
+                viewModel.tick()
+                delay(16L)
             }
         }
     }
@@ -65,19 +57,21 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(Unit) {
-                    detectDragGestures(
-                        onDragStart = { offset -> viewModel.onDragStart(offset) },
-                        onDrag      = { change, _ -> change.consume(); viewModel.onDrag(change.position) },
-                        onDragEnd   = { viewModel.onDragEnd() },
-                        onDragCancel= { viewModel.onDragEnd() }
-                    )
+                .pointerInput(state.phase) {
+                    if (state.phase == GamePhase.Idle || state.phase == GamePhase.Aiming) {
+                        detectDragGestures(
+                            onDragStart = { offset -> viewModel.onDragStart(offset) },
+                            onDrag      = { change, _ -> change.consume(); viewModel.onDrag(change.position) },
+                            onDragEnd   = { viewModel.onDragEnd() },
+                            onDragCancel= { viewModel.onDragEnd() }
+                        )
+                    }
                 }
         ) {
             val sz = this.size
             if (sz.width > 0f && sz.height > 0f) viewModel.onCanvasReady(sz)
 
-            val canvasW  = sz.width
+            val canvasW   = sz.width
             val blockSize = viewModel.blockSizePublic(canvasW)
 
             drawRect(BackgroundColor)
@@ -85,7 +79,7 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
             // Blocks
             state.blocks.forEach { block ->
                 val rect = viewModel.blockRect(block, canvasW, blockSize)
-                drawBlock(block.color, rect, block.hp.toString(), measurer, block.alpha)
+                drawBlock(block.color, rect, block.hp.toString(), measurer)
             }
 
             // Aim line
@@ -93,16 +87,16 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
                 drawAimLine(state.ballLaunchOrigin, state.aimDirection)
             }
 
-            // Active flying balls
-            state.balls.forEach { ball ->
-                if (ball.isActive && !ball.isReturned) {
-                    // Balls waiting for their launch delay are drawn at the origin
-                    val drawPos = if (ball.launchDelaySeconds > 0f) state.ballLaunchOrigin else ball.position
-                    drawBall(drawPos, viewModel.ballRadiusPublic)
+            // Balls: moving balls during shooting
+            if (state.phase == GamePhase.Shooting) {
+                state.balls.forEach { ball ->
+                    if (ball.isMoving && !ball.isReturned) {
+                        drawBall(ball.position, viewModel.ballRadiusPublic)
+                    }
                 }
             }
 
-            // Idle / Aiming: show ball at origin
+            // Idle / Aiming: show single ball at origin
             if (state.ballLaunchOrigin != Offset.Zero &&
                 (state.phase == GamePhase.Idle || state.phase == GamePhase.Aiming)) {
                 drawBall(state.ballLaunchOrigin, viewModel.ballRadiusPublic)
@@ -136,19 +130,18 @@ fun DrawScope.drawBlock(
     color: Color,
     rect: Rect,
     label: String,
-    measurer: androidx.compose.ui.text.TextMeasurer,
-    alpha: Float = 1f
+    measurer: androidx.compose.ui.text.TextMeasurer
 ) {
     drawRect(
         brush = Brush.verticalGradient(
-            colors = listOf(color.copy(alpha = alpha), color.copy(alpha = alpha * 0.7f)),
+            colors = listOf(color, color.copy(alpha = 0.7f)),
             startY = rect.top, endY = rect.bottom
         ),
         topLeft = Offset(rect.left, rect.top),
         size    = Size(rect.width, rect.height)
     )
     drawRect(
-        color   = Color.White.copy(alpha = 0.25f * alpha),
+        color   = Color.White.copy(alpha = 0.25f),
         topLeft = Offset(rect.left, rect.top),
         size    = Size(rect.width, rect.height),
         style   = Stroke(width = 1.5f)
@@ -156,10 +149,10 @@ fun DrawScope.drawBlock(
     val measured = measurer.measure(
         text  = label,
         style = TextStyle(
-            color       = Color.White.copy(alpha = alpha),
-            fontSize    = 13.sp,
-            fontWeight  = FontWeight.Bold,
-            textAlign   = TextAlign.Center
+            color      = Color.White,
+            fontSize   = 13.sp,
+            fontWeight = FontWeight.Bold,
+            textAlign  = TextAlign.Center
         )
     )
     drawText(
@@ -167,8 +160,7 @@ fun DrawScope.drawBlock(
         topLeft = Offset(
             rect.left + (rect.width  - measured.size.width)  / 2f,
             rect.top  + (rect.height - measured.size.height) / 2f
-        ),
-        alpha = alpha
+        )
     )
 }
 
@@ -227,7 +219,7 @@ fun HudItem(label: String, value: String) {
 @Composable
 fun GameOverScreen(score: Int, onRestart: () -> Unit) {
     Box(
-        modifier        = Modifier.fillMaxSize().background(Color(0xCC000000)),
+        modifier         = Modifier.fillMaxSize().background(Color(0xCC000000)),
         contentAlignment = Alignment.Center
     ) {
         Column(
@@ -240,8 +232,8 @@ fun GameOverScreen(score: Int, onRestart: () -> Unit) {
                  fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             Button(
-                onClick = onRestart,
-                colors  = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50)),
+                onClick  = onRestart,
+                colors   = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50)),
                 modifier = Modifier.padding(horizontal = 32.dp).fillMaxWidth(0.6f).height(52.dp)
             ) {
                 Text("PLAY AGAIN", fontSize = 16.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)

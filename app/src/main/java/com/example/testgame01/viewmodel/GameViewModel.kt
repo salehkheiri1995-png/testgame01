@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import java.util.UUID
 import kotlin.math.*
 
 class GameViewModel : ViewModel() {
@@ -22,12 +23,8 @@ class GameViewModel : ViewModel() {
     private val blockPadding = 8f
     private val topBarHeight = 120f
     private val bottomBarHeight = 160f
-
-    // Speed in pixels per second — frame-rate independent with delta time
-    private val ballSpeed = 420f
-
-    // Stagger between balls in seconds (fixed, does not grow with ball count)
-    private val launchStaggerSeconds = 0.07f
+    private val ballSpeed = 25f          // pixels per tick (same as Ballz)
+    private val launchDelayTicks = 8    // ticks between each ball launch (same as Ballz)
 
     private var lastKnownSize = Size.Zero
 
@@ -75,6 +72,7 @@ class GameViewModel : ViewModel() {
         if (len < 15f) return Offset.Zero
         var normX = dir.x / len
         var normY = dir.y / len
+        // Clamp so ball always goes upward
         if (normY >= -0.05f) normY = -0.05f
         val minSin = sin(Math.toRadians(10.0)).toFloat()
         if (abs(normY) < minSin) {
@@ -82,32 +80,42 @@ class GameViewModel : ViewModel() {
             val rem = sqrt(max(0f, 1f - normY * normY))
             normX = if (normX < 0) -rem else rem
         }
-        // Store as normalized direction — speed applied in tick() using delta time
-        return Offset(normX, normY)
+        // Return as velocity vector (pre-scaled by speed, same as Ballz onDragEnd)
+        return Offset(normX * ballSpeed, normY * ballSpeed)
     }
 
-    // ---- Launch ----
+    // ---- Launch (same pattern as Ballz) ----
 
-    private fun launchBalls(direction: Offset) {
+    private fun launchBalls(velocity: Offset) {
         val s = _state.value
+        // Prepare all balls at origin, none moving yet
         val balls = (0 until s.ballCount).map { i ->
             Ball(
                 id = i,
                 position = s.ballLaunchOrigin,
-                velocity = direction,          // unit-direction; scaled by ballSpeed * dt in tick()
-                isActive = true,
-                isReturned = false,
-                launchDelaySeconds = i * launchStaggerSeconds
+                velocity = velocity,
+                isMoving = false,
+                isReturned = false
             )
+        }.toMutableList()
+        // Launch first ball immediately (same as Ballz)
+        if (balls.isNotEmpty()) {
+            balls[0] = balls[0].copy(isMoving = true)
         }
         _state.update {
-            it.copy(balls = balls, phase = GamePhase.Shooting, aimDirection = Offset.Zero)
+            it.copy(
+                balls = balls,
+                phase = GamePhase.Shooting,
+                aimDirection = Offset.Zero,
+                ballsToLaunchLeft = s.ballCount - 1,
+                launchDelayCounter = 0
+            )
         }
     }
 
-    // ---- Tick (called from withFrameNanos in GameScreen with real delta time) ----
+    // ---- Tick: called every 16ms from delay(16L) in GameScreen ----
 
-    fun tick(dt: Float) {
+    fun tick() {
         val s = _state.value
         if (s.phase != GamePhase.Shooting) return
         if (s.canvasSize == Size.Zero) return
@@ -117,93 +125,123 @@ class GameViewModel : ViewModel() {
         val mutableBlocks = s.blocks.toMutableList()
         var scoreGained = 0
 
-        val updatedBalls = s.balls.map { ball ->
-            // Count down launch delay in real seconds
-            if (ball.launchDelaySeconds > 0f) {
-                return@map ball.copy(launchDelaySeconds = ball.launchDelaySeconds - dt)
-            }
-            if (!ball.isActive || ball.isReturned) return@map ball
+        var nextBallsToLaunchLeft = s.ballsToLaunchLeft
+        var nextLaunchDelayCounter = s.launchDelayCounter
 
-            var pos = ball.position
-            // velocity is a unit vector — scale by speed and dt each frame
-            val stepDist = ballSpeed * dt
-            var vel = ball.velocity  // unit direction
-            val steps = 2
-
-            repeat(steps) { _ ->
-                val dx = vel.x * stepDist / steps
-                val dy = vel.y * stepDist / steps
-                val next = Offset(pos.x + dx, pos.y + dy)
-
-                var nx = next.x
-                var ny = next.y
-                var vx = vel.x
-                var vy = vel.y
-
-                if (nx - ballRadius <= 0f) { vx = abs(vx); nx = ballRadius }
-                if (nx + ballRadius >= canvasW) { vx = -abs(vx); nx = canvasW - ballRadius }
-                if (ny - ballRadius <= topBarHeight) { vy = abs(vy); ny = topBarHeight + ballRadius }
-
-                vel = Offset(vx, vy)
-                pos = Offset(nx, ny)
-
-                // Block collisions
-                for (i in mutableBlocks.indices) {
-                    val blk = mutableBlocks[i]
-                    if (blk.isDestroyed) continue
-                    val rect = blockRect(blk, canvasW, blockSize)
-                    if (circleRectCollide(pos, ballRadius, rect)) {
-                        val newHp = blk.hp - 1
-                        scoreGained++
-                        mutableBlocks[i] = if (newHp <= 0)
-                            blk.copy(hp = 0, isDestroyed = true)
-                        else
-                            blk.copy(hp = newHp)
-                        vel = reflectBall(vel, pos, rect)
-                        pos = pushOut(pos, rect)
-                        break
-                    }
+        // 1. Stagger launch: activate next ball after delay ticks (same as Ballz)
+        val updatedBalls = s.balls.mapIndexed { index, ball ->
+            val ballToLaunchIndex = s.ballCount - nextBallsToLaunchLeft
+            if (index == ballToLaunchIndex && nextBallsToLaunchLeft > 0) {
+                if (nextLaunchDelayCounter >= launchDelayTicks) {
+                    ball.copy(isMoving = true)
+                } else {
+                    ball
                 }
+            } else {
+                ball
+            }
+        }.toMutableList()
+
+        if (nextBallsToLaunchLeft > 0) {
+            if (nextLaunchDelayCounter >= launchDelayTicks) {
+                nextLaunchDelayCounter = 0
+                nextBallsToLaunchLeft--
+            } else {
+                nextLaunchDelayCounter++
+            }
+        }
+
+        // 2. Physics for each moving ball
+        val hitBlockHpReductions = mutableMapOf<String, Int>()
+
+        for (i in updatedBalls.indices) {
+            val ball = updatedBalls[i]
+            if (!ball.isMoving || ball.isReturned) continue
+
+            var pos = ball.position + ball.velocity
+            var vel = ball.velocity
+
+            // Wall collisions
+            if (pos.x - ballRadius <= 0f) {
+                vel = vel.copy(x = abs(vel.x))
+                pos = pos.copy(x = ballRadius)
+            } else if (pos.x + ballRadius >= canvasW) {
+                vel = vel.copy(x = -abs(vel.x))
+                pos = pos.copy(x = canvasW - ballRadius)
+            }
+            if (pos.y - ballRadius <= topBarHeight) {
+                vel = vel.copy(y = abs(vel.y))
+                pos = pos.copy(y = topBarHeight + ballRadius)
             }
 
             // Bottom: return ball
             if (pos.y + ballRadius >= s.ballLaunchOrigin.y) {
-                return@map ball.copy(
+                updatedBalls[i] = ball.copy(
                     position = s.ballLaunchOrigin,
                     velocity = vel,
+                    isMoving = false,
                     isReturned = true
                 )
+                continue
             }
 
-            ball.copy(position = pos, velocity = vel)
+            // Block collisions
+            for (blk in mutableBlocks) {
+                if (blk.isDestroyed) continue
+                val rect = blockRect(blk, canvasW, blockSize)
+
+                val closestX = pos.x.coerceIn(rect.left, rect.right)
+                val closestY = pos.y.coerceIn(rect.top, rect.bottom)
+                val dx = pos.x - closestX
+                val dy = pos.y - closestY
+                if (dx * dx + dy * dy < ballRadius * ballRadius) {
+                    val currentReductions = hitBlockHpReductions.getOrDefault(blk.id, 0)
+                    hitBlockHpReductions[blk.id] = currentReductions + 1
+                    scoreGained++
+
+                    // Reflection (same logic as Ballz)
+                    val overlapX = ballRadius - abs(dx)
+                    val overlapY = ballRadius - abs(dy)
+                    vel = if (closestX == rect.left || closestX == rect.right) {
+                        if (closestY == rect.top || closestY == rect.bottom) {
+                            if (overlapX < overlapY) vel.copy(x = -vel.x)
+                            else vel.copy(y = -vel.y)
+                        } else vel.copy(x = -vel.x)
+                    } else {
+                        vel.copy(y = -vel.y)
+                    }
+                    break
+                }
+            }
+
+            updatedBalls[i] = ball.copy(position = pos, velocity = vel)
         }
 
-        // Always update blocks so HP changes are reflected immediately
-        val visibleBlocks = mutableBlocks.filter { !it.isDestroyed }
+        // 3. Apply HP reductions to blocks
+        val updatedBlocks = mutableBlocks.mapNotNull { blk ->
+            val reduction = hitBlockHpReductions.getOrDefault(blk.id, 0)
+            if (reduction > 0) {
+                val newHp = blk.hp - reduction
+                if (newHp <= 0) null else blk.copy(hp = newHp)
+            } else blk
+        }
+
         val newScore = s.score + scoreGained
 
-        // End turn when all active (non-delayed) balls have returned
-        val activeBalls = updatedBalls.filter { it.isActive && it.launchDelaySeconds <= 0f }
-        val allReturned = activeBalls.isNotEmpty() && activeBalls.all { it.isReturned }
-
+        // 4. End turn when all balls returned
+        val allReturned = updatedBalls.all { it.isReturned }
         if (allReturned) {
-            endTurn(visibleBlocks, newScore)
+            endTurn(updatedBlocks, newScore)
         } else {
-            _state.update { it.copy(balls = updatedBalls, blocks = visibleBlocks, score = newScore) }
-        }
-    }
-
-    private fun pushOut(pos: Offset, rect: androidx.compose.ui.geometry.Rect): Offset {
-        val fromTop    = abs(pos.y - rect.top)
-        val fromBottom = abs(pos.y - rect.bottom)
-        val fromLeft   = abs(pos.x - rect.left)
-        val fromRight  = abs(pos.x - rect.right)
-        val minDist = minOf(fromTop, fromBottom, fromLeft, fromRight)
-        return when (minDist) {
-            fromTop    -> pos.copy(y = rect.top    - ballRadius)
-            fromBottom -> pos.copy(y = rect.bottom + ballRadius)
-            fromLeft   -> pos.copy(x = rect.left   - ballRadius)
-            else       -> pos.copy(x = rect.right  + ballRadius)
+            _state.update {
+                it.copy(
+                    balls = updatedBalls,
+                    blocks = updatedBlocks,
+                    score = newScore,
+                    ballsToLaunchLeft = nextBallsToLaunchLeft,
+                    launchDelayCounter = nextLaunchDelayCounter
+                )
+            }
         }
     }
 
@@ -230,7 +268,9 @@ class GameViewModel : ViewModel() {
                 ballCount = newBallCount,
                 score = newScore,
                 phase = GamePhase.Idle,
-                turn = newTurn
+                turn = newTurn,
+                ballsToLaunchLeft = 0,
+                launchDelayCounter = 0
             )
         }
     }
@@ -252,31 +292,21 @@ class GameViewModel : ViewModel() {
     fun blockSizePublic(canvasW: Float) = blockSizeFor(canvasW)
 
     private fun generateRow(size: Size, row: Int, currentBallCount: Int): List<Block> {
-        return (0 until cols).map { col ->
-            val hp = ((1..currentBallCount.coerceAtLeast(1)).random() +
-                    (0..currentBallCount / 2).random()).coerceIn(1, 30)
-            Block(id = ++idCounter, hp = hp, col = col, row = row)
+        val java = java.util.Random()
+        val result = mutableListOf<Block>()
+        var spawnedAny = false
+        for (col in 0 until cols) {
+            if (java.nextFloat() < 0.7f) {
+                val hp = (1..currentBallCount.coerceAtLeast(1)).random()
+                result.add(Block(id = UUID.randomUUID().toString(), hp = hp, maxHp = hp, col = col, row = row))
+                spawnedAny = true
+            }
         }
-    }
-
-    private fun circleRectCollide(center: Offset, radius: Float, rect: androidx.compose.ui.geometry.Rect): Boolean {
-        val nearX = center.x.coerceIn(rect.left, rect.right)
-        val nearY = center.y.coerceIn(rect.top, rect.bottom)
-        val dx = center.x - nearX
-        val dy = center.y - nearY
-        return dx * dx + dy * dy <= radius * radius
-    }
-
-    private fun reflectBall(vel: Offset, ballPos: Offset, rect: androidx.compose.ui.geometry.Rect): Offset {
-        val fromTop    = abs(ballPos.y - rect.top)
-        val fromBottom = abs(ballPos.y - rect.bottom)
-        val fromLeft   = abs(ballPos.x - rect.left)
-        val fromRight  = abs(ballPos.x - rect.right)
-        val minDist = minOf(fromTop, fromBottom, fromLeft, fromRight)
-        return when (minDist) {
-            fromTop, fromBottom -> vel.copy(y = -vel.y)
-            else                -> vel.copy(x = -vel.x)
+        if (!spawnedAny) {
+            val col = java.nextInt(cols)
+            result.add(Block(id = UUID.randomUUID().toString(), hp = 1, maxHp = 1, col = col, row = row))
         }
+        return result
     }
 
     fun restartGame() {
