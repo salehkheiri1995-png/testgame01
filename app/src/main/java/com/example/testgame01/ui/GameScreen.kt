@@ -34,14 +34,27 @@ private val BackgroundColor = Color(0xFF1A1A2E)
 private val BallColor       = Color(0xFFE0E0E0)
 private val AimLineColor    = Color(0x99FFFFFF)
 private val TopBarBg        = Color(0xFF16213E)
+private val BottomBarBg     = Color(0xFF16213E)
 
 @Composable
 fun GameScreen(viewModel: GameViewModel = viewModel()) {
-    val state by viewModel.state.collectAsState()
+    val state   by viewModel.state.collectAsState()
     val measurer = rememberTextMeasurer()
     val density  = LocalDensity.current
 
-    // Game loop — delay(16L) like Ballz
+    // Measured pixel heights reported by the actual Composables
+    var topBarPx    by remember { mutableStateOf(0f) }
+    var bottomBarPx by remember { mutableStateOf(0f) }
+    var canvasSizePx by remember { mutableStateOf(Size.Zero) }
+
+    // Whenever any measured dimension changes, update ViewModel
+    LaunchedEffect(canvasSizePx, topBarPx, bottomBarPx) {
+        if (canvasSizePx != Size.Zero && topBarPx > 0f && bottomBarPx > 0f) {
+            viewModel.onCanvasReady(canvasSizePx, topBarPx, bottomBarPx)
+        }
+    }
+
+    // Game loop
     LaunchedEffect(state.phase) {
         if (state.phase == GamePhase.Shooting) {
             while (viewModel.state.value.phase == GamePhase.Shooting) {
@@ -57,44 +70,36 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
             .background(BackgroundColor)
             .windowInsetsPadding(WindowInsets.systemBars)
     ) {
-        val phase = state.phase   // snapshot for lambdas below
-
+        // ---- Full-screen canvas underneath ----
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
-                // *** FIX 1: key = Unit so gesture detector is NEVER recreated on phase change ***
                 .pointerInput(Unit) {
                     detectDragGestures(
                         onDragStart = { offset ->
-                            // Check phase inside lambda, not as key
-                            if (viewModel.state.value.phase == GamePhase.Idle ||
-                                viewModel.state.value.phase == GamePhase.Aiming) {
+                            val ph = viewModel.state.value.phase
+                            if (ph == GamePhase.Idle || ph == GamePhase.Aiming)
                                 viewModel.onDragStart(offset)
-                            }
                         },
                         onDrag = { change, _ ->
                             change.consume()
-                            if (viewModel.state.value.phase == GamePhase.Aiming) {
+                            if (viewModel.state.value.phase == GamePhase.Aiming)
                                 viewModel.onDrag(change.position)
-                            }
                         },
                         onDragEnd = {
-                            if (viewModel.state.value.phase == GamePhase.Aiming) {
+                            if (viewModel.state.value.phase == GamePhase.Aiming)
                                 viewModel.onDragEnd()
-                            }
                         },
                         onDragCancel = {
-                            if (viewModel.state.value.phase == GamePhase.Aiming) {
+                            if (viewModel.state.value.phase == GamePhase.Aiming)
                                 viewModel.onDragEnd()
-                            }
                         }
                     )
                 }
-                // *** FIX 2: use onSizeChanged to report canvas size BEFORE first draw ***
                 .onSizeChanged { intSize ->
-                    val w = with(density) { intSize.width.toFloat() }
-                    val h = with(density) { intSize.height.toFloat() }
-                    if (w > 0f && h > 0f) viewModel.onCanvasReady(Size(w, h))
+                    with(density) {
+                        canvasSizePx = Size(intSize.width.toFloat(), intSize.height.toFloat())
+                    }
                 }
         ) {
             val canvasW   = size.width
@@ -109,28 +114,51 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
             }
 
             // Aim line
-            if (phase == GamePhase.Aiming && state.aimDirection != Offset.Zero) {
+            if (state.phase == GamePhase.Aiming && state.aimDirection != Offset.Zero) {
                 drawAimLine(state.ballLaunchOrigin, state.aimDirection)
             }
 
             // Moving balls
-            if (phase == GamePhase.Shooting) {
+            if (state.phase == GamePhase.Shooting) {
                 state.balls.forEach { ball ->
-                    if (ball.isMoving && !ball.isReturned) {
+                    if (ball.isMoving && !ball.isReturned)
                         drawBall(ball.position, viewModel.ballRadiusPublic)
-                    }
                 }
             }
 
-            // Idle / Aiming: static ball at origin
+            // Static ball
             if (state.ballLaunchOrigin != Offset.Zero &&
-                (phase == GamePhase.Idle || phase == GamePhase.Aiming)) {
+                (state.phase == GamePhase.Idle || state.phase == GamePhase.Aiming)) {
                 drawBall(state.ballLaunchOrigin, viewModel.ballRadiusPublic)
             }
         }
 
-        TopHud(score = state.score, ballCount = state.ballCount, turn = state.turn)
+        // ---- TOP HUD: measure its pixel height ----
+        TopHud(
+            score     = state.score,
+            ballCount = state.ballCount,
+            turn      = state.turn,
+            modifier  = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .onSizeChanged { intSize ->
+                    val px = intSize.height.toFloat()
+                    if (px != topBarPx) topBarPx = px
+                }
+        )
 
+        // ---- BOTTOM BAR: measure its pixel height ----
+        BottomBar(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .onSizeChanged { intSize ->
+                    val px = intSize.height.toFloat()
+                    if (px != bottomBarPx) bottomBarPx = px
+                }
+        )
+
+        // Game Over overlay
         if (state.phase == GamePhase.GameOver) {
             GameOverScreen(score = state.score, onRestart = { viewModel.restartGame() })
         }
@@ -144,18 +172,14 @@ fun DrawScope.drawBall(center: Offset, radius: Float) {
     drawCircle(
         brush = Brush.radialGradient(
             colors = listOf(Color(0x55FFFFFF), Color.Transparent),
-            center = center,
-            radius = radius * 2f
+            center = center, radius = radius * 2f
         ),
-        radius = radius * 2f,
-        center = center
+        radius = radius * 2f, center = center
     )
 }
 
 fun DrawScope.drawBlock(
-    color: Color,
-    rect: Rect,
-    label: String,
+    color: Color, rect: Rect, label: String,
     measurer: androidx.compose.ui.text.TextMeasurer
 ) {
     drawRect(
@@ -175,10 +199,8 @@ fun DrawScope.drawBlock(
     val measured = measurer.measure(
         text  = label,
         style = TextStyle(
-            color      = Color.White,
-            fontSize   = 13.sp,
-            fontWeight = FontWeight.Bold,
-            textAlign  = TextAlign.Center
+            color = Color.White, fontSize = 13.sp,
+            fontWeight = FontWeight.Bold, textAlign = TextAlign.Center
         )
     )
     drawText(
@@ -195,34 +217,31 @@ fun DrawScope.drawAimLine(origin: Offset, direction: Offset) {
     if (len == 0f) return
     val normX = direction.x / len
     val normY = direction.y / len
-    val dashLength = 14f
-    val gapLength  = 8f
-    var traveled = 0f
-    var current = origin
+    val dashLength = 14f; val gapLength = 8f
+    var traveled = 0f; var current = origin
     val maxTravel = 350f
     while (traveled < maxTravel) {
         val endX = current.x + normX * dashLength
         val endY = current.y + normY * dashLength
         val a    = (1f - traveled / maxTravel).coerceIn(0f, 1f)
         drawLine(
-            color       = AimLineColor.copy(alpha = a),
-            start       = current,
-            end         = Offset(endX, endY),
-            strokeWidth = 3f,
-            cap         = StrokeCap.Round
+            color = AimLineColor.copy(alpha = a),
+            start = current, end = Offset(endX, endY),
+            strokeWidth = 3f, cap = StrokeCap.Round
         )
         current  = Offset(endX + normX * gapLength, endY + normY * gapLength)
         traveled += dashLength + gapLength
     }
 }
 
+// ---- Composable UI pieces ----
+
 @Composable
-fun TopHud(score: Int, ballCount: Int, turn: Int) {
+fun TopHud(score: Int, ballCount: Int, turn: Int, modifier: Modifier = Modifier) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
+        modifier = modifier
             .background(TopBarBg)
-            .padding(horizontal = 20.dp, vertical = 12.dp),
+            .padding(horizontal = 20.dp, vertical = 14.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment     = Alignment.CenterVertically
     ) {
@@ -233,11 +252,21 @@ fun TopHud(score: Int, ballCount: Int, turn: Int) {
 }
 
 @Composable
+fun BottomBar(modifier: Modifier = Modifier) {
+    // Visual anchor at the bottom — same height as the ball launch zone
+    Box(
+        modifier = modifier
+            .background(BottomBarBg.copy(alpha = 0.6f))
+            .padding(vertical = 28.dp)
+    )
+}
+
+@Composable
 fun HudItem(label: String, value: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(text = label, color = Color(0xFF9E9E9E), fontSize = 10.sp,
              fontWeight = FontWeight.Medium, letterSpacing = 1.5.sp)
-        Text(text = value, color = Color.White,       fontSize = 18.sp,
+        Text(text = value, color = Color.White, fontSize = 18.sp,
              fontWeight = FontWeight.Bold)
     }
 }
