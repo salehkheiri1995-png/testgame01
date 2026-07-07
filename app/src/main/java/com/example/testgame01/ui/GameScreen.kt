@@ -97,7 +97,7 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
             state.balls.forEach { ball ->
                 if (ball.isActive && !ball.isReturned) {
                     // Balls waiting for their launch delay are drawn at the origin
-                    val drawPos = if (ball.launchDelay > 0) state.ballLaunchOrigin else ball.position
+                    val drawPos = if (ball.launchDelaySeconds > 0f) state.ballLaunchOrigin else ball.position
                     drawBall(drawPos, viewModel.ballRadiusPublic)
                 }
             }
