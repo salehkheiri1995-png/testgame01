@@ -20,19 +20,17 @@ class GameViewModel : ViewModel() {
     private val ballRadius = ballRadiusPublic
     private val cols = 6
     private val blockPadding = 8f
-    private val ballSpeed = 25f
+    private val ballSpeed = 12f   // کمتر از قبل تا توپ دیده بشه و collision miss نکنه
     private val launchDelayTicks = 8
 
     private var topBarHeightPx    = 0f
     private var bottomBarHeightPx = 0f
     private var lastKnownSize = Size.Zero
 
-    // ---- Canvas init ----
-
     fun onCanvasReady(size: Size, topBarPx: Float, bottomBarPx: Float) {
         val changed = size != lastKnownSize ||
-                      topBarPx    != topBarHeightPx ||
-                      bottomBarPx != bottomBarHeightPx
+                topBarPx    != topBarHeightPx ||
+                bottomBarPx != bottomBarHeightPx
         if (!changed) return
         lastKnownSize      = size
         topBarHeightPx     = topBarPx
@@ -46,8 +44,6 @@ class GameViewModel : ViewModel() {
     private fun spawnInitialBlocks(size: Size) {
         _state.update { it.copy(blocks = generateRow(size, 0, 1)) }
     }
-
-    // ---- Aiming ----
 
     fun onDragStart(position: Offset) {
         if (_state.value.phase != GamePhase.Idle) return
@@ -74,46 +70,33 @@ class GameViewModel : ViewModel() {
     private fun clampToValidAngle(dir: Offset): Offset {
         val len = sqrt(dir.x * dir.x + dir.y * dir.y)
         if (len < 15f) return Offset.Zero
-
         var normX = dir.x / len
         var normY = dir.y / len
-
-        // توپ باید حتماً رو به بالا باشه (normY منفی = بالا در Compose)
-        // حداقل زاویه ۳۰ درجه از افق — sin(30°) = 0.5
-        val minVertical = sin(Math.toRadians(30.0)).toFloat()  // 0.5
-
-        // اگر کاربر رو به پایین یا افقی drag کرد، normY رو به -minVertical کلمپ کن
-        if (normY > -minVertical) {
-            normY = -minVertical
-            // normX رو نرمالایز کن تا بردار unit بمونه
-            val rem = sqrt(max(0f, 1f - normY * normY))  // = cos(30°) ≈ 0.866
+        // فقط جلوی کاملاً افقی یا پایین رو بگیر — حداقل ۵ درجه از افق
+        val minSin = sin(Math.toRadians(5.0)).toFloat()
+        if (normY > -minSin) {
+            normY = -minSin
+            val rem = sqrt(max(0f, 1f - normY * normY))
             normX = if (normX >= 0f) rem else -rem
         }
-
         return Offset(normX * ballSpeed, normY * ballSpeed)
     }
-
-    // ---- Launch ----
 
     private fun launchBalls(velocity: Offset) {
         val s = _state.value
         val balls = (0 until s.ballCount).map { i ->
             Ball(id = i, position = s.ballLaunchOrigin, velocity = velocity,
-                 isMoving = false, isReturned = false)
+                isMoving = false, isReturned = false)
         }.toMutableList()
         if (balls.isNotEmpty()) balls[0] = balls[0].copy(isMoving = true)
         _state.update {
             it.copy(
-                balls = balls,
-                phase = GamePhase.Shooting,
+                balls = balls, phase = GamePhase.Shooting,
                 aimDirection = Offset.Zero,
-                ballsToLaunchLeft = s.ballCount - 1,
-                launchDelayCounter = 0
+                ballsToLaunchLeft = s.ballCount - 1, launchDelayCounter = 0
             )
         }
     }
-
-    // ---- Tick ----
 
     fun tick() {
         val s = _state.value
@@ -128,7 +111,6 @@ class GameViewModel : ViewModel() {
         var nextBallsToLaunchLeft  = s.ballsToLaunchLeft
         var nextLaunchDelayCounter = s.launchDelayCounter
 
-        // Stagger launch
         val updatedBalls = s.balls.mapIndexed { index, ball ->
             val ballToLaunchIndex = s.ballCount - nextBallsToLaunchLeft
             if (index == ballToLaunchIndex && nextBallsToLaunchLeft > 0) {
@@ -138,65 +120,76 @@ class GameViewModel : ViewModel() {
 
         if (nextBallsToLaunchLeft > 0) {
             if (nextLaunchDelayCounter >= launchDelayTicks) {
-                nextLaunchDelayCounter = 0
-                nextBallsToLaunchLeft--
+                nextLaunchDelayCounter = 0; nextBallsToLaunchLeft--
             } else nextLaunchDelayCounter++
         }
 
-        // Physics
         val hitBlockHpReductions = mutableMapOf<String, Int>()
 
         for (i in updatedBalls.indices) {
             val ball = updatedBalls[i]
             if (!ball.isMoving || ball.isReturned) continue
 
-            var pos = ball.position + ball.velocity
+            // --- substep: 2 مرحله در هر تیک تا collision miss نشه ---
+            val subSteps = 2
+            val subVel = Offset(ball.velocity.x / subSteps, ball.velocity.y / subSteps)
+            var pos = ball.position
             var vel = ball.velocity
+            var returned = false
+            var hitThisTick = false
 
-            // Walls
-            if (pos.x - ballRadius <= 0f) {
-                vel = vel.copy(x = abs(vel.x)); pos = pos.copy(x = ballRadius)
-            } else if (pos.x + ballRadius >= canvasW) {
-                vel = vel.copy(x = -abs(vel.x)); pos = pos.copy(x = canvasW - ballRadius)
-            }
-            if (pos.y - ballRadius <= topBarHeightPx) {
-                vel = vel.copy(y = abs(vel.y))
-                pos = pos.copy(y = topBarHeightPx + ballRadius)
-            }
-            // Bottom = return
-            if (pos.y + ballRadius >= s.ballLaunchOrigin.y) {
-                updatedBalls[i] = ball.copy(
-                    position = s.ballLaunchOrigin, velocity = vel,
-                    isMoving = false, isReturned = true
-                )
-                continue
-            }
+            repeat(subSteps) { step ->
+                if (returned || hitThisTick) return@repeat
+                pos = pos + subVel
 
-            // Block collisions
-            for (blk in mutableBlocks) {
-                if (blk.isDestroyed) continue
-                val rect = blockRect(blk, canvasW, blockSize)
-                val closestX = pos.x.coerceIn(rect.left, rect.right)
-                val closestY = pos.y.coerceIn(rect.top, rect.bottom)
-                val dx = pos.x - closestX
-                val dy = pos.y - closestY
-                if (dx * dx + dy * dy < ballRadius * ballRadius) {
-                    hitBlockHpReductions[blk.id] = (hitBlockHpReductions[blk.id] ?: 0) + 1
-                    scoreGained++
-                    val overlapX = ballRadius - abs(dx)
-                    val overlapY = ballRadius - abs(dy)
-                    vel = if (closestX == rect.left || closestX == rect.right) {
-                        if (closestY == rect.top || closestY == rect.bottom) {
-                            if (overlapX < overlapY) vel.copy(x = -vel.x) else vel.copy(y = -vel.y)
-                        } else vel.copy(x = -vel.x)
-                    } else vel.copy(y = -vel.y)
-                    break
+                // دیوار چپ/راست
+                if (pos.x - ballRadius <= 0f) {
+                    vel = vel.copy(x = abs(vel.x)); pos = pos.copy(x = ballRadius)
+                } else if (pos.x + ballRadius >= canvasW) {
+                    vel = vel.copy(x = -abs(vel.x)); pos = pos.copy(x = canvasW - ballRadius)
+                }
+                // دیوار بالا
+                if (pos.y - ballRadius <= topBarHeightPx) {
+                    vel = vel.copy(y = abs(vel.y))
+                    pos = pos.copy(y = topBarHeightPx + ballRadius)
+                }
+                // برگشت
+                if (pos.y + ballRadius >= s.ballLaunchOrigin.y) {
+                    returned = true; return@repeat
+                }
+                // برخورد با بلوک
+                for (blk in mutableBlocks) {
+                    if (blk.isDestroyed) continue
+                    val rect = blockRect(blk, canvasW, blockSize)
+                    val cx = pos.x.coerceIn(rect.left, rect.right)
+                    val cy = pos.y.coerceIn(rect.top, rect.bottom)
+                    val dx = pos.x - cx
+                    val dy = pos.y - cy
+                    if (dx * dx + dy * dy < ballRadius * ballRadius) {
+                        hitBlockHpReductions[blk.id] = (hitBlockHpReductions[blk.id] ?: 0) + 1
+                        scoreGained++
+                        val ox = ballRadius - abs(dx)
+                        val oy = ballRadius - abs(dy)
+                        vel = if (cx == rect.left || cx == rect.right) {
+                            if (cy == rect.top || cy == rect.bottom) {
+                                if (ox < oy) vel.copy(x = -vel.x) else vel.copy(y = -vel.y)
+                            } else vel.copy(x = -vel.x)
+                        } else vel.copy(y = -vel.y)
+                        // subVel رو هم آپدیت کن بعد از bounce
+                        hitThisTick = true
+                        break
+                    }
                 }
             }
-            updatedBalls[i] = ball.copy(position = pos, velocity = vel)
+
+            updatedBalls[i] = if (returned) {
+                ball.copy(position = s.ballLaunchOrigin, velocity = vel,
+                    isMoving = false, isReturned = true)
+            } else {
+                ball.copy(position = pos, velocity = vel)
+            }
         }
 
-        // Apply HP reductions
         val updatedBlocks = mutableBlocks.mapNotNull { blk ->
             val reduction = hitBlockHpReductions[blk.id] ?: 0
             if (reduction > 0) {
@@ -226,7 +219,6 @@ class GameViewModel : ViewModel() {
         val blockSize    = blockSizeFor(canvasW)
         val maxRow = ((s.canvasSize.height - topBarHeightPx - bottomBarHeightPx) /
                 (blockSize.height + blockPadding)).toInt()
-
         if (movedBlocks.any { it.row >= maxRow }) {
             _state.update { it.copy(blocks = movedBlocks, score = newScore, phase = GamePhase.GameOver) }
             return
@@ -241,8 +233,6 @@ class GameViewModel : ViewModel() {
             )
         }
     }
-
-    // ---- Helpers ----
 
     private fun blockSizeFor(canvasW: Float): Size {
         val totalPad = blockPadding * (cols + 1)
