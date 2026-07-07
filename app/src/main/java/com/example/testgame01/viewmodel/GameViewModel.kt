@@ -23,24 +23,20 @@ class GameViewModel : ViewModel() {
     private val ballSpeed = 25f
     private val launchDelayTicks = 8
 
-    // These are set dynamically from GameScreen (in real pixels)
     private var topBarHeightPx    = 0f
     private var bottomBarHeightPx = 0f
-
     private var lastKnownSize = Size.Zero
 
-    // ---- Canvas init: called from onSizeChanged + onHudMeasured ----
+    // ---- Canvas init ----
 
     fun onCanvasReady(size: Size, topBarPx: Float, bottomBarPx: Float) {
         val changed = size != lastKnownSize ||
                       topBarPx    != topBarHeightPx ||
                       bottomBarPx != bottomBarHeightPx
         if (!changed) return
-
         lastKnownSize      = size
         topBarHeightPx     = topBarPx
         bottomBarHeightPx  = bottomBarPx
-
         val origin = Offset(size.width / 2f, size.height - bottomBarHeightPx - ballRadius - 8f)
         val wasEmpty = _state.value.blocks.isEmpty()
         _state.update { it.copy(canvasSize = size, ballLaunchOrigin = origin) }
@@ -78,15 +74,22 @@ class GameViewModel : ViewModel() {
     private fun clampToValidAngle(dir: Offset): Offset {
         val len = sqrt(dir.x * dir.x + dir.y * dir.y)
         if (len < 15f) return Offset.Zero
+
         var normX = dir.x / len
         var normY = dir.y / len
-        if (normY >= -0.05f) normY = -0.05f
-        val minSin = sin(Math.toRadians(10.0)).toFloat()
-        if (abs(normY) < minSin) {
-            normY = -minSin
-            val rem = sqrt(max(0f, 1f - normY * normY))
-            normX = if (normX < 0) -rem else rem
+
+        // توپ باید حتماً رو به بالا باشه (normY منفی = بالا در Compose)
+        // حداقل زاویه ۳۰ درجه از افق — sin(30°) = 0.5
+        val minVertical = sin(Math.toRadians(30.0)).toFloat()  // 0.5
+
+        // اگر کاربر رو به پایین یا افقی drag کرد، normY رو به -minVertical کلمپ کن
+        if (normY > -minVertical) {
+            normY = -minVertical
+            // normX رو نرمالایز کن تا بردار unit بمونه
+            val rem = sqrt(max(0f, 1f - normY * normY))  // = cos(30°) ≈ 0.866
+            normX = if (normX >= 0f) rem else -rem
         }
+
         return Offset(normX * ballSpeed, normY * ballSpeed)
     }
 
@@ -156,7 +159,6 @@ class GameViewModel : ViewModel() {
             } else if (pos.x + ballRadius >= canvasW) {
                 vel = vel.copy(x = -abs(vel.x)); pos = pos.copy(x = canvasW - ballRadius)
             }
-            // Top wall = bottom of HUD
             if (pos.y - ballRadius <= topBarHeightPx) {
                 vel = vel.copy(y = abs(vel.y))
                 pos = pos.copy(y = topBarHeightPx + ballRadius)
@@ -250,7 +252,6 @@ class GameViewModel : ViewModel() {
 
     fun blockRect(block: Block, canvasW: Float, blockSize: Size): androidx.compose.ui.geometry.Rect {
         val x = blockPadding + block.col * (blockSize.width + blockPadding)
-        // topBarHeightPx is always accurate because it comes from real measured pixel height
         val y = topBarHeightPx + blockPadding + block.row * (blockSize.height + blockPadding)
         return androidx.compose.ui.geometry.Rect(x, y, x + blockSize.width, y + blockSize.height)
     }
