@@ -22,7 +22,7 @@ class GameViewModel : ViewModel() {
     private var gameLoopJob: Job? = null
     private var activationJob: Job? = null
     private var idCounter = 0
-    val ballRadiusPublic = 22f
+    val ballRadiusPublic = 12f
     private val ballRadius = ballRadiusPublic
     private val cols = 6
     private val blockPadding = 8f
@@ -54,7 +54,6 @@ class GameViewModel : ViewModel() {
 
     fun onDragStart(position: Offset) {
         val s = _state.value
-        // Only allow aiming in Idle phase
         if (s.phase != GamePhase.Idle) return
         _state.update { it.copy(phase = GamePhase.Aiming) }
     }
@@ -63,7 +62,6 @@ class GameViewModel : ViewModel() {
         val s = _state.value
         if (s.phase != GamePhase.Aiming) return
         val origin = s.ballLaunchOrigin
-        // direction = from launch origin toward touch position
         val raw = Offset(position.x - origin.x, position.y - origin.y)
         val clamped = clampToValidAngle(raw)
         _state.update { it.copy(aimDirection = clamped) }
@@ -83,13 +81,12 @@ class GameViewModel : ViewModel() {
     private fun clampToValidAngle(dir: Offset): Offset {
         if (dir.x == 0f && dir.y == 0f) return Offset.Zero
         val len = sqrt(dir.x * dir.x + dir.y * dir.y)
-        // Minimum drag distance to register aim
         if (len < 15f) return Offset.Zero
 
         var normX = dir.x / len
         var normY = dir.y / len
 
-        // Force upward direction (negative Y in screen coords)
+        // Force upward direction
         if (normY >= 0f) normY = -0.05f
 
         val minSin = sin(Math.toRadians(10.0)).toFloat()
@@ -99,7 +96,7 @@ class GameViewModel : ViewModel() {
             normX = if (normX < 0) -remaining else remaining
         }
 
-        val speed = 18f
+        val speed = 10f
         return Offset(normX * speed, normY * speed)
     }
 
@@ -146,7 +143,7 @@ class GameViewModel : ViewModel() {
         gameLoopJob?.cancel()
         gameLoopJob = viewModelScope.launch {
             while (_state.value.phase == GamePhase.Shooting) {
-                delay(16L)
+                delay(8L)
                 tickUpdate()
             }
         }
@@ -168,38 +165,48 @@ class GameViewModel : ViewModel() {
 
             var pos = ball.position
             var vel = ball.velocity
+            val subSteps = 3
 
-            // Wall bouncing
-            if (pos.x - ballRadius <= 0f) {
-                vel = vel.copy(x = abs(vel.x))
-                pos = pos.copy(x = ballRadius)
-            }
-            if (pos.x + ballRadius >= canvasW) {
-                vel = vel.copy(x = -abs(vel.x))
-                pos = pos.copy(x = canvasW - ballRadius)
-            }
-            if (pos.y - ballRadius <= topBarHeight) {
-                vel = vel.copy(y = abs(vel.y))
-                pos = pos.copy(y = topBarHeight + ballRadius)
-            }
+            for (step in 0 until subSteps) {
+                val stepVelX = vel.x / subSteps
+                val stepVelY = vel.y / subSteps
 
-            // Block collision
-            for (i in newBlocks.indices) {
-                val blk = newBlocks[i]
-                if (blk.isDestroyed) continue
-                val bRect = blockRect(blk, canvasW, blockSize)
-                if (circleRectCollide(pos, ballRadius, bRect)) {
-                    val newHp = blk.hp - 1
-                    scoreGained++
-                    newBlocks[i] = if (newHp <= 0) blk.copy(hp = 0, isDestroyed = true)
-                    else blk.copy(hp = newHp)
-                    vel = reflectBall(vel, pos, bRect)
-                    break
+                // Wall bouncing
+                if (pos.x - ballRadius <= 0f) {
+                    vel = vel.copy(x = abs(vel.x))
+                    pos = pos.copy(x = ballRadius)
                 }
-            }
+                if (pos.x + ballRadius >= canvasW) {
+                    vel = vel.copy(x = -abs(vel.x))
+                    pos = pos.copy(x = canvasW - ballRadius)
+                }
+                if (pos.y - ballRadius <= topBarHeight) {
+                    vel = vel.copy(y = abs(vel.y))
+                    pos = pos.copy(y = topBarHeight + ballRadius)
+                }
 
-            // Move ball forward
-            pos = Offset(pos.x + vel.x, pos.y + vel.y)
+                // Block collision
+                val nextPos = Offset(pos.x + stepVelX, pos.y + stepVelY)
+                var hitBlock = false
+                for (i in newBlocks.indices) {
+                    val blk = newBlocks[i]
+                    if (blk.isDestroyed) continue
+                    val bRect = blockRect(blk, canvasW, blockSize)
+                    if (circleRectCollide(nextPos, ballRadius, bRect)) {
+                        val newHp = blk.hp - 1
+                        scoreGained++
+                        newBlocks[i] = if (newHp <= 0) blk.copy(hp = 0, isDestroyed = true)
+                                       else blk.copy(hp = newHp)
+                        vel = reflectBall(vel, pos, bRect)
+                        hitBlock = true
+                        break
+                    }
+                }
+
+                // Move the ball one sub-step
+                pos = Offset(pos.x + if (hitBlock) 0f else stepVelX,
+                             pos.y + if (hitBlock) 0f else stepVelY)
+            }
 
             // Return check
             val returned = pos.y + ballRadius >= s.ballLaunchOrigin.y
@@ -217,7 +224,6 @@ class GameViewModel : ViewModel() {
         val newScore = s.score + scoreGained
         val filteredBlocks = newBlocks.filter { !it.isDestroyed }
 
-        // End turn only when every ball has been launched AND returned
         val activeBalls = updatedBalls.filter { it.isActive }
         val allActiveBallsReturned = activeBalls.isNotEmpty() && activeBalls.all { it.isReturned }
         val allBallsLaunched = ballsActivated >= totalBallsToLaunch
