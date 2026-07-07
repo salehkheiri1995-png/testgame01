@@ -38,12 +38,20 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
     val state by viewModel.state.collectAsState()
     val measurer = rememberTextMeasurer()
 
-    // ---- Game loop: runs every display frame via withFrameNanos ----
+    // ---- Game loop: delta-time based so speed is frame-rate independent ----
     LaunchedEffect(state.phase) {
         if (state.phase == GamePhase.Shooting) {
+            var lastFrameNanos = -1L
             while (isActive && viewModel.state.value.phase == GamePhase.Shooting) {
-                withFrameNanos { }
-                viewModel.tick()
+                withFrameNanos { frameNanos ->
+                    val dt = if (lastFrameNanos < 0L) {
+                        1f / 60f
+                    } else {
+                        ((frameNanos - lastFrameNanos) / 1_000_000_000f).coerceIn(0.001f, 0.05f)
+                    }
+                    lastFrameNanos = frameNanos
+                    viewModel.tick(dt)
+                }
             }
         }
     }
@@ -87,8 +95,10 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
 
             // Active flying balls
             state.balls.forEach { ball ->
-                if (ball.isActive && !ball.isReturned && ball.launchDelay <= 0) {
-                    drawBall(ball.position, viewModel.ballRadiusPublic)
+                if (ball.isActive && !ball.isReturned) {
+                    // Balls waiting for their launch delay are drawn at the origin
+                    val drawPos = if (ball.launchDelay > 0) state.ballLaunchOrigin else ball.position
+                    drawBall(drawPos, viewModel.ballRadiusPublic)
                 }
             }
 

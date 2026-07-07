@@ -1,38 +1,33 @@
 package com.example.testgame01.model
 
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-
-data class Ball(
-    val id: Int,
-    val position: Offset,
-    val velocity: Offset,
-    val isActive: Boolean = false,
-    val isReturned: Boolean = false,
-    val launchDelay: Int = 0   // ticks before this ball starts moving
-)
+import kotlin.random.Random
 
 data class Block(
     val id: Int,
-    var hp: Int,
-    var col: Int,
-    var row: Int,
-    var isDestroyed: Boolean = false,
-    var alpha: Float = 1f
-) {
-    val color: Color
-        get() = when {
-            hp <= 3  -> Color(0xFF4CAF50)
-            hp <= 8  -> Color(0xFF8BC34A)
-            hp <= 13 -> Color(0xFFFFC107)
-            hp <= 18 -> Color(0xFFFF9800)
-            else     -> Color(0xFFF44336)
-        }
-}
+    val hp: Int,
+    val col: Int,
+    val row: Int,
+    val isDestroyed: Boolean = false,
+    val color: Color = randomBlockColor(),
+    val alpha: Float = 1f
+)
 
-sealed class GamePhase {
-    object Idle     : GamePhase()
-    object Aiming   : GamePhase()
-    object Shooting : GamePhase()
-    object GameOver : GamePhase()
+data class Ball(
+    val id: Int,
+    val position: androidx.compose.ui.geometry.Offset,
+    val velocity: androidx.compose.ui.geometry.Offset,  // unit direction vector
+    val isActive: Boolean = true,
+    val isReturned: Boolean = false,
+    val launchDelaySeconds: Float = 0f                  // seconds before this ball activates
+)
+
+enum class GamePhase { Idle, Aiming, Shooting, GameOver }
+
+fun randomBlockColor(): Color {
+    val palette = listOf(
+        Color(0xFF3A86FF), Color(0xFFFF006E), Color(0xFFFB5607),
+        Color(0xFFFFBE0B), Color(0xFF8338EC), Color(0xFF06D6A0)
+    )
+    return palette[Random.nextInt(palette.size)]
 }

@@ -22,7 +22,12 @@ class GameViewModel : ViewModel() {
     private val blockPadding = 8f
     private val topBarHeight = 120f
     private val bottomBarHeight = 160f
-    private val ballSpeed = 6f
+
+    // Speed in pixels per second — frame-rate independent with delta time
+    private val ballSpeed = 420f
+
+    // Stagger between balls in seconds (fixed, does not grow with ball count)
+    private val launchStaggerSeconds = 0.07f
 
     private var lastKnownSize = Size.Zero
 
@@ -77,22 +82,22 @@ class GameViewModel : ViewModel() {
             val rem = sqrt(max(0f, 1f - normY * normY))
             normX = if (normX < 0) -rem else rem
         }
-        return Offset(normX * ballSpeed, normY * ballSpeed)
+        // Store as normalized direction — speed applied in tick() using delta time
+        return Offset(normX, normY)
     }
 
     // ---- Launch ----
 
     private fun launchBalls(direction: Offset) {
         val s = _state.value
-        // Stagger launch positions slightly so balls are visible individually
         val balls = (0 until s.ballCount).map { i ->
             Ball(
                 id = i,
                 position = s.ballLaunchOrigin,
-                velocity = direction,
+                velocity = direction,          // unit-direction; scaled by ballSpeed * dt in tick()
                 isActive = true,
                 isReturned = false,
-                launchDelay = i * 8  // ticks delay before activating
+                launchDelaySeconds = i * launchStaggerSeconds
             )
         }
         _state.update {
@@ -100,9 +105,9 @@ class GameViewModel : ViewModel() {
         }
     }
 
-    // ---- Tick (called from withFrameNanos in GameScreen) ----
+    // ---- Tick (called from withFrameNanos in GameScreen with real delta time) ----
 
-    fun tick() {
+    fun tick(dt: Float) {
         val s = _state.value
         if (s.phase != GamePhase.Shooting) return
         if (s.canvasSize == Size.Zero) return
@@ -113,22 +118,23 @@ class GameViewModel : ViewModel() {
         var scoreGained = 0
 
         val updatedBalls = s.balls.map { ball ->
-            // Handle launch delay
-            if (ball.launchDelay > 0) {
-                return@map ball.copy(launchDelay = ball.launchDelay - 1)
+            // Count down launch delay in real seconds
+            if (ball.launchDelaySeconds > 0f) {
+                return@map ball.copy(launchDelaySeconds = ball.launchDelaySeconds - dt)
             }
             if (!ball.isActive || ball.isReturned) return@map ball
 
             var pos = ball.position
-            var vel = ball.velocity
-            val steps = 4
+            // velocity is a unit vector — scale by speed and dt each frame
+            val stepDist = ballSpeed * dt
+            var vel = ball.velocity  // unit direction
+            val steps = 2
 
             repeat(steps) { _ ->
-                val dx = vel.x / steps
-                val dy = vel.y / steps
+                val dx = vel.x * stepDist / steps
+                val dy = vel.y * stepDist / steps
                 val next = Offset(pos.x + dx, pos.y + dy)
 
-                // Wall collisions
                 var nx = next.x
                 var ny = next.y
                 var vx = vel.x
@@ -154,7 +160,6 @@ class GameViewModel : ViewModel() {
                         else
                             blk.copy(hp = newHp)
                         vel = reflectBall(vel, pos, rect)
-                        // Push ball out of block
                         pos = pushOut(pos, rect)
                         break
                     }
@@ -173,31 +178,32 @@ class GameViewModel : ViewModel() {
             ball.copy(position = pos, velocity = vel)
         }
 
-        val filteredBlocks = mutableBlocks.filter { !it.isDestroyed }
+        // Always update blocks so HP changes are reflected immediately
+        val visibleBlocks = mutableBlocks.filter { !it.isDestroyed }
         val newScore = s.score + scoreGained
 
-        // End turn when all balls are done
-        val activeBalls = updatedBalls.filter { it.isActive && it.launchDelay <= 0 }
+        // End turn when all active (non-delayed) balls have returned
+        val activeBalls = updatedBalls.filter { it.isActive && it.launchDelaySeconds <= 0f }
         val allReturned = activeBalls.isNotEmpty() && activeBalls.all { it.isReturned }
 
         if (allReturned) {
-            endTurn(filteredBlocks, newScore)
+            endTurn(visibleBlocks, newScore)
         } else {
-            _state.update { it.copy(balls = updatedBalls, blocks = filteredBlocks, score = newScore) }
+            _state.update { it.copy(balls = updatedBalls, blocks = visibleBlocks, score = newScore) }
         }
     }
 
     private fun pushOut(pos: Offset, rect: androidx.compose.ui.geometry.Rect): Offset {
-        val fromTop = abs(pos.y - rect.top)
+        val fromTop    = abs(pos.y - rect.top)
         val fromBottom = abs(pos.y - rect.bottom)
-        val fromLeft = abs(pos.x - rect.left)
-        val fromRight = abs(pos.x - rect.right)
+        val fromLeft   = abs(pos.x - rect.left)
+        val fromRight  = abs(pos.x - rect.right)
         val minDist = minOf(fromTop, fromBottom, fromLeft, fromRight)
         return when (minDist) {
-            fromTop -> pos.copy(y = rect.top - ballRadius)
+            fromTop    -> pos.copy(y = rect.top    - ballRadius)
             fromBottom -> pos.copy(y = rect.bottom + ballRadius)
-            fromLeft -> pos.copy(x = rect.left - ballRadius)
-            else -> pos.copy(x = rect.right + ballRadius)
+            fromLeft   -> pos.copy(x = rect.left   - ballRadius)
+            else       -> pos.copy(x = rect.right  + ballRadius)
         }
     }
 
@@ -262,14 +268,14 @@ class GameViewModel : ViewModel() {
     }
 
     private fun reflectBall(vel: Offset, ballPos: Offset, rect: androidx.compose.ui.geometry.Rect): Offset {
-        val fromTop = abs(ballPos.y - rect.top)
+        val fromTop    = abs(ballPos.y - rect.top)
         val fromBottom = abs(ballPos.y - rect.bottom)
-        val fromLeft = abs(ballPos.x - rect.left)
-        val fromRight = abs(ballPos.x - rect.right)
+        val fromLeft   = abs(ballPos.x - rect.left)
+        val fromRight  = abs(ballPos.x - rect.right)
         val minDist = minOf(fromTop, fromBottom, fromLeft, fromRight)
         return when (minDist) {
             fromTop, fromBottom -> vel.copy(y = -vel.y)
-            else -> vel.copy(x = -vel.x)
+            else                -> vel.copy(x = -vel.x)
         }
     }
 
