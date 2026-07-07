@@ -15,6 +15,8 @@ import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
@@ -37,8 +39,9 @@ private val TopBarBg        = Color(0xFF16213E)
 fun GameScreen(viewModel: GameViewModel = viewModel()) {
     val state by viewModel.state.collectAsState()
     val measurer = rememberTextMeasurer()
+    val density  = LocalDensity.current
 
-    // Game loop: exactly like Ballz — delay(16L) every tick
+    // Game loop — delay(16L) like Ballz
     LaunchedEffect(state.phase) {
         if (state.phase == GamePhase.Shooting) {
             while (viewModel.state.value.phase == GamePhase.Shooting) {
@@ -54,24 +57,47 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
             .background(BackgroundColor)
             .windowInsetsPadding(WindowInsets.systemBars)
     ) {
+        val phase = state.phase   // snapshot for lambdas below
+
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(state.phase) {
-                    if (state.phase == GamePhase.Idle || state.phase == GamePhase.Aiming) {
-                        detectDragGestures(
-                            onDragStart = { offset -> viewModel.onDragStart(offset) },
-                            onDrag      = { change, _ -> change.consume(); viewModel.onDrag(change.position) },
-                            onDragEnd   = { viewModel.onDragEnd() },
-                            onDragCancel= { viewModel.onDragEnd() }
-                        )
-                    }
+                // *** FIX 1: key = Unit so gesture detector is NEVER recreated on phase change ***
+                .pointerInput(Unit) {
+                    detectDragGestures(
+                        onDragStart = { offset ->
+                            // Check phase inside lambda, not as key
+                            if (viewModel.state.value.phase == GamePhase.Idle ||
+                                viewModel.state.value.phase == GamePhase.Aiming) {
+                                viewModel.onDragStart(offset)
+                            }
+                        },
+                        onDrag = { change, _ ->
+                            change.consume()
+                            if (viewModel.state.value.phase == GamePhase.Aiming) {
+                                viewModel.onDrag(change.position)
+                            }
+                        },
+                        onDragEnd = {
+                            if (viewModel.state.value.phase == GamePhase.Aiming) {
+                                viewModel.onDragEnd()
+                            }
+                        },
+                        onDragCancel = {
+                            if (viewModel.state.value.phase == GamePhase.Aiming) {
+                                viewModel.onDragEnd()
+                            }
+                        }
+                    )
+                }
+                // *** FIX 2: use onSizeChanged to report canvas size BEFORE first draw ***
+                .onSizeChanged { intSize ->
+                    val w = with(density) { intSize.width.toFloat() }
+                    val h = with(density) { intSize.height.toFloat() }
+                    if (w > 0f && h > 0f) viewModel.onCanvasReady(Size(w, h))
                 }
         ) {
-            val sz = this.size
-            if (sz.width > 0f && sz.height > 0f) viewModel.onCanvasReady(sz)
-
-            val canvasW   = sz.width
+            val canvasW   = size.width
             val blockSize = viewModel.blockSizePublic(canvasW)
 
             drawRect(BackgroundColor)
@@ -83,12 +109,12 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
             }
 
             // Aim line
-            if (state.phase == GamePhase.Aiming && state.aimDirection != Offset.Zero) {
+            if (phase == GamePhase.Aiming && state.aimDirection != Offset.Zero) {
                 drawAimLine(state.ballLaunchOrigin, state.aimDirection)
             }
 
-            // Balls: moving balls during shooting
-            if (state.phase == GamePhase.Shooting) {
+            // Moving balls
+            if (phase == GamePhase.Shooting) {
                 state.balls.forEach { ball ->
                     if (ball.isMoving && !ball.isReturned) {
                         drawBall(ball.position, viewModel.ballRadiusPublic)
@@ -96,9 +122,9 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
                 }
             }
 
-            // Idle / Aiming: show single ball at origin
+            // Idle / Aiming: static ball at origin
             if (state.ballLaunchOrigin != Offset.Zero &&
-                (state.phase == GamePhase.Idle || state.phase == GamePhase.Aiming)) {
+                (phase == GamePhase.Idle || phase == GamePhase.Aiming)) {
                 drawBall(state.ballLaunchOrigin, viewModel.ballRadiusPublic)
             }
         }
@@ -183,7 +209,7 @@ fun DrawScope.drawAimLine(origin: Offset, direction: Offset) {
             start       = current,
             end         = Offset(endX, endY),
             strokeWidth = 3f,
-            cap         = androidx.compose.ui.graphics.StrokeCap.Round
+            cap         = StrokeCap.Round
         )
         current  = Offset(endX + normX * gapLength, endY + normY * gapLength)
         traveled += dashLength + gapLength
