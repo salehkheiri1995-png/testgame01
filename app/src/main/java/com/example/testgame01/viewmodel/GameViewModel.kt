@@ -20,8 +20,13 @@ class GameViewModel : ViewModel() {
     private val ballRadius = ballRadiusPublic
     private val cols = 6
     private val blockPadding = 8f
-    private val ballSpeed = 12f   // کمتر از قبل تا توپ دیده بشه و collision miss نکنه
+    private val ballSpeed = 22f   // سرعت بالاتر؛ با subSteps=4 هنوز collision miss نمی‌کنه
     private val launchDelayTicks = 8
+
+    // --- افزایش تدریجی سرعت وقتی برگشتن توپ‌ها طول می‌کشه ---
+    private val speedRampStartTicks = 90   // تا این تیک، سرعت طبیعی (~۱.۵ ثانیه)
+    private val speedRampFullTicks  = 240  // از این تیک به بعد، سرعت به حداکثر می‌رسه (~۴ ثانیه)
+    private val maxSpeedMultiplier  = 3f   // حداکثر چند برابر شدن سرعت
 
     private var topBarHeightPx    = 0f
     private var bottomBarHeightPx = 0f
@@ -35,7 +40,7 @@ class GameViewModel : ViewModel() {
         lastKnownSize      = size
         topBarHeightPx     = topBarPx
         bottomBarHeightPx  = bottomBarPx
-        val origin = Offset(size.width / 2f, size.height - bottomBarHeightPx - ballRadius - 8f)
+        val origin = Offset(size.width / 2f, size.height - bottomBarHeightPx - ballRadius * 0.3f)
         val wasEmpty = _state.value.blocks.isEmpty()
         _state.update { it.copy(canvasSize = size, ballLaunchOrigin = origin) }
         if (wasEmpty) spawnInitialBlocks(size)
@@ -93,7 +98,8 @@ class GameViewModel : ViewModel() {
             it.copy(
                 balls = balls, phase = GamePhase.Shooting,
                 aimDirection = Offset.Zero,
-                ballsToLaunchLeft = s.ballCount - 1, launchDelayCounter = 0
+                ballsToLaunchLeft = s.ballCount - 1, launchDelayCounter = 0,
+                ticksSinceLaunch = 0
             )
         }
     }
@@ -126,13 +132,31 @@ class GameViewModel : ViewModel() {
 
         val hitBlockHpReductions = mutableMapOf<String, Int>()
 
+        // پایین‌ترین لبه‌ی بلوک‌های زنده — اگر توپی از این پایین‌تر رفته و در حال نزوله،
+        // دیگه امکان برخورد با هیچ بلوکی نداره، پس نباید منتظر بازگشتش از دیواره‌ها بمونیم.
+        val lowestBlockBottom = mutableBlocks
+            .filter { !it.isDestroyed }
+            .maxOfOrNull { blockRect(it, canvasW, blockSize).bottom }
+            ?: topBarHeightPx
+
+        // هر چه بیشتر طول بکشه تا توپ‌ها برگردن، سرعت بیشتر می‌شه تا نوبت زودتر تموم بشه
+        val speedMultiplier = speedMultiplierFor(s.ticksSinceLaunch)
+
         for (i in updatedBalls.indices) {
             val ball = updatedBalls[i]
             if (!ball.isMoving || ball.isReturned) continue
 
-            // --- substep: 2 مرحله در هر تیک تا collision miss نشه ---
-            val subSteps = 2
-            val subVel = Offset(ball.velocity.x / subSteps, ball.velocity.y / subSteps)
+            // در حال نزول و پایین‌تر از آخرین بلوک زنده → دیگه به هیچ بلوکی نمی‌خوره،
+            // پس به‌جای صبر برای چند بار برخورد با دیواره‌ها، فوراً برش می‌گردونیم.
+            if (ball.velocity.y > 0f && ball.position.y - ballRadius > lowestBlockBottom) {
+                updatedBalls[i] = ball.copy(
+                    position = s.ballLaunchOrigin, isMoving = false, isReturned = true
+                )
+                continue
+            }
+
+            // --- substep: تعداد substep با سرعت لحظه‌ای هماهنگ می‌شه تا با افزایش سرعت هم tunneling رخ نده ---
+            val subSteps = (4 * speedMultiplier).roundToInt().coerceIn(4, 14)
             var pos = ball.position
             var vel = ball.velocity
             var returned = false
@@ -140,7 +164,12 @@ class GameViewModel : ViewModel() {
 
             repeat(subSteps) { step ->
                 if (returned || hitThisTick) return@repeat
-                pos = pos + subVel
+                // سرعت هر substep از vel فعلی (ضرب‌شده در speedMultiplier) محاسبه می‌شود
+                val stepVel = Offset(
+                    vel.x * speedMultiplier / subSteps,
+                    vel.y * speedMultiplier / subSteps
+                )
+                pos = pos + stepVel
 
                 // دیوار چپ/راست
                 if (pos.x - ballRadius <= 0f) {
@@ -153,8 +182,11 @@ class GameViewModel : ViewModel() {
                     vel = vel.copy(y = abs(vel.y))
                     pos = pos.copy(y = topBarHeightPx + ballRadius)
                 }
-                // برگشت
-                if (pos.y + ballRadius >= s.ballLaunchOrigin.y) {
+                // برگشت — مقایسه مرکز به مرکز؛ ballLaunchOrigin مرکز توپ است نه کف آن.
+                // فقط وقتی برگرد که واقعاً از بالا نزول کرده و از خط launch رد شده باشد
+                // (نه در همون substepهای اول بعد از شلیک).
+                if (pos.y >= s.ballLaunchOrigin.y && vel.y > 0f) {
+                    pos = pos.copy(y = s.ballLaunchOrigin.y)
                     returned = true; return@repeat
                 }
                 // برخورد با بلوک
@@ -175,7 +207,7 @@ class GameViewModel : ViewModel() {
                                 if (ox < oy) vel.copy(x = -vel.x) else vel.copy(y = -vel.y)
                             } else vel.copy(x = -vel.x)
                         } else vel.copy(y = -vel.y)
-                        // subVel رو هم آپدیت کن بعد از bounce
+                        // نوته: stepVel بار بعد از vel جدید محاسبه می‌شود، نیاز به آپدیت دستی نیست
                         hitThisTick = true
                         break
                     }
@@ -190,22 +222,51 @@ class GameViewModel : ViewModel() {
             }
         }
 
+        val newlyDestroyed = mutableListOf<ExplodingBlock>()
         val updatedBlocks = mutableBlocks.mapNotNull { blk ->
             val reduction = hitBlockHpReductions[blk.id] ?: 0
             if (reduction > 0) {
                 val newHp = blk.hp - reduction
-                if (newHp <= 0) null else blk.copy(hp = newHp)
+                if (newHp <= 0) {
+                    val rect = blockRect(blk, canvasW, blockSize)
+                    newlyDestroyed += ExplodingBlock(
+                        id = blk.id,
+                        fragments = createShatterFragments(rect, blockColorForHp(blk.hp, blk.maxHp))
+                    )
+                    null
+                } else blk.copy(hp = newHp)
             } else blk
         }
 
+        // انیمیشن شکستن: ~۲۴ تیک (~ ۳۸۰ میلی‌ثانیه) — تکه‌ها پخش می‌شن، با گرانش می‌افتن و محو می‌شن
+        val explodeStep = 1f / 24f
+        val fragmentGravity = 0.7f
+        val updatedExploding = (s.explodingBlocks.map { eb ->
+            eb.copy(
+                progress = eb.progress + explodeStep,
+                fragments = eb.fragments.map { f ->
+                    f.copy(
+                        cx = f.cx + f.vx,
+                        cy = f.cy + f.vy,
+                        vy = f.vy + fragmentGravity,
+                        rotationDeg = f.rotationDeg + f.rotationSpeed
+                    )
+                }
+            )
+        } + newlyDestroyed).filter { it.progress < 1f }
+
         val newScore = s.score + scoreGained
         val allReturned = updatedBalls.all { it.isReturned }
-        if (allReturned) endTurn(updatedBlocks, newScore)
-        else _state.update {
+        if (allReturned) {
+            _state.update { it.copy(explodingBlocks = updatedExploding) }
+            endTurn(updatedBlocks, newScore)
+        } else _state.update {
             it.copy(
                 balls = updatedBalls, blocks = updatedBlocks, score = newScore,
                 ballsToLaunchLeft = nextBallsToLaunchLeft,
-                launchDelayCounter = nextLaunchDelayCounter
+                launchDelayCounter = nextLaunchDelayCounter,
+                ticksSinceLaunch = s.ticksSinceLaunch + 1,
+                explodingBlocks = updatedExploding
             )
         }
     }
@@ -220,7 +281,7 @@ class GameViewModel : ViewModel() {
         val maxRow = ((s.canvasSize.height - topBarHeightPx - bottomBarHeightPx) /
                 (blockSize.height + blockPadding)).toInt()
         if (movedBlocks.any { it.row >= maxRow }) {
-            _state.update { it.copy(blocks = movedBlocks, score = newScore, phase = GamePhase.GameOver) }
+            _state.update { it.copy(blocks = movedBlocks, score = newScore, phase = GamePhase.GameOver, ticksSinceLaunch = 0, explodingBlocks = emptyList()) }
             return
         }
         val newRow = generateRow(s.canvasSize, 0, newBallCount)
@@ -229,9 +290,22 @@ class GameViewModel : ViewModel() {
                 balls = emptyList(), blocks = newRow + movedBlocks,
                 ballCount = newBallCount, score = newScore,
                 phase = GamePhase.Idle, turn = newTurn,
-                ballsToLaunchLeft = 0, launchDelayCounter = 0
+                ballsToLaunchLeft = 0, launchDelayCounter = 0, ticksSinceLaunch = 0,
+                explodingBlocks = emptyList()
             )
         }
+    }
+
+    /**
+     * هر چه از شروع شلیک این نوبت تیک بیشتری گذشته باشه، سرعت بیشتر می‌شه —
+     * تا زمانی که برگشتن توپ‌ها بیش از حد طول بکشه، بازی خودش سرعتش رو زیاد کنه.
+     */
+    private fun speedMultiplierFor(ticksSinceLaunch: Int): Float {
+        if (ticksSinceLaunch <= speedRampStartTicks) return 1f
+        val rampDuration = (speedRampFullTicks - speedRampStartTicks).coerceAtLeast(1)
+        val progress = ((ticksSinceLaunch - speedRampStartTicks).toFloat() / rampDuration)
+            .coerceIn(0f, 1f)
+        return 1f + progress * (maxSpeedMultiplier - 1f)
     }
 
     private fun blockSizeFor(canvasW: Float): Size {
@@ -269,7 +343,7 @@ class GameViewModel : ViewModel() {
     fun restartGame() {
         lastKnownSize = Size.Zero
         val size   = _state.value.canvasSize
-        val origin = Offset(size.width / 2f, size.height - bottomBarHeightPx - ballRadius - 8f)
+        val origin = Offset(size.width / 2f, size.height - bottomBarHeightPx - ballRadius * 0.3f)
         _state.value = GameState(canvasSize = size, ballLaunchOrigin = origin)
         if (size != Size.Zero) spawnInitialBlocks(size)
     }

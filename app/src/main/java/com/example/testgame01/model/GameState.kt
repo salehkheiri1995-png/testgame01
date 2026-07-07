@@ -6,6 +6,7 @@ import androidx.compose.ui.geometry.Size
 data class GameState(
     val balls: List<Ball> = emptyList(),
     val blocks: List<Block> = emptyList(),
+    val explodingBlocks: List<ExplodingBlock> = emptyList(),
     val ballCount: Int = 1,
     val score: Int = 0,
     val phase: GamePhase = GamePhase.Idle,
@@ -15,5 +16,7 @@ data class GameState(
     val turn: Int = 1,
     // multi-ball stagger
     val ballsToLaunchLeft: Int = 0,
-    val launchDelayCounter: Int = 0
+    val launchDelayCounter: Int = 0,
+    // چند تیک از شروع شلیک این نوبت گذشته — برای افزایش تدریجی سرعت وقتی برگشتن توپ طول می‌کشه
+    val ticksSinceLaunch: Int = 0
 )

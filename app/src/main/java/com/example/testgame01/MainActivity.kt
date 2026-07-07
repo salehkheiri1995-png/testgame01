@@ -13,7 +13,7 @@ import com.example.testgame01.ui.theme.Testgame01Theme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON )
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(Color.parseColor("#FF16213E")),
             navigationBarStyle = SystemBarStyle.dark(Color.parseColor("#FF1A1A2E"))

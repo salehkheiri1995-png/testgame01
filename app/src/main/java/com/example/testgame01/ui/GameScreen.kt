@@ -14,6 +14,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -26,6 +27,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.testgame01.model.GamePhase
+import com.example.testgame01.model.blockColorForHp
+import com.example.testgame01.model.ExplodingBlock
 import com.example.testgame01.viewmodel.GameViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -61,7 +64,7 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
         }
     }
 
-    BoxWithConstraints(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(BackgroundColor)
@@ -104,7 +107,12 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
             // Blocks
             state.blocks.forEach { block ->
                 val rect = viewModel.blockRect(block, canvasW, blockSize)
-                drawBlock(block.color, rect, block.hp.toString(), measurer)
+                drawBlock(blockColorForHp(block.hp, block.maxHp), rect, block.hp.toString(), measurer)
+            }
+
+            // انیمیشن شکستن بلوک‌ها: تیکه‌تیکه شدن + پخش شدن + چرخش + محو شدن
+            state.explodingBlocks.forEach { eb ->
+                drawExplodingBlock(eb)
             }
 
             // Aim line
@@ -112,12 +120,11 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
                 drawAimLine(state.ballLaunchOrigin, state.aimDirection)
             }
 
-            // توپ‌ها در حین شلیک — همه رو نشون بده به جز returned
+            // توپ‌ها در حین شلیک — همه رو نشون بده، حتی برگشته‌ها (که الان دور نقطه‌ی
+            // launch جمع شدن) تا به‌جای غیب شدن ناگهانی، دیده بشه که دارن جمع می‌شن
             if (state.phase == GamePhase.Shooting) {
                 state.balls.forEach { ball ->
-                    if (!ball.isReturned) {
-                        drawBall(ball.position, viewModel.ballRadiusPublic)
-                    }
+                    drawBall(ball.position, viewModel.ballRadiusPublic)
                 }
             }
 
@@ -204,6 +211,21 @@ fun DrawScope.drawBlock(
     )
 }
 
+fun DrawScope.drawExplodingBlock(eb: ExplodingBlock) {
+    // progress: 0 = تازه شکسته (کاملاً واضح) → 1 = محو کامل
+    val alpha = (1f - eb.progress).coerceIn(0f, 1f)
+    if (alpha <= 0f) return
+    eb.fragments.forEach { f ->
+        rotate(degrees = f.rotationDeg, pivot = Offset(f.cx, f.cy)) {
+            drawRect(
+                color   = f.color.copy(alpha = alpha),
+                topLeft = Offset(f.cx - f.width / 2f, f.cy - f.height / 2f),
+                size    = Size(f.width, f.height)
+            )
+        }
+    }
+}
+
 fun DrawScope.drawAimLine(origin: Offset, direction: Offset) {
     val len = sqrt(direction.x * direction.x + direction.y * direction.y)
     if (len == 0f) return
@@ -256,9 +278,9 @@ fun BottomBar(modifier: Modifier = Modifier) {
 fun HudItem(label: String, value: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(text = label, color = Color(0xFF9E9E9E), fontSize = 10.sp,
-             fontWeight = FontWeight.Medium, letterSpacing = 1.5.sp)
+            fontWeight = FontWeight.Medium, letterSpacing = 1.5.sp)
         Text(text = value, color = Color.White, fontSize = 18.sp,
-             fontWeight = FontWeight.Bold)
+            fontWeight = FontWeight.Bold)
     }
 }
 
@@ -273,9 +295,9 @@ fun GameOverScreen(score: Int, onRestart: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text("GAME OVER", color = Color(0xFFF44336), fontSize = 42.sp,
-                 fontWeight = FontWeight.ExtraBold, letterSpacing = 4.sp)
+                fontWeight = FontWeight.ExtraBold, letterSpacing = 4.sp)
             Text("Score: $score", color = Color.White, fontSize = 28.sp,
-                 fontWeight = FontWeight.Bold)
+                fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             Button(
                 onClick  = onRestart,
