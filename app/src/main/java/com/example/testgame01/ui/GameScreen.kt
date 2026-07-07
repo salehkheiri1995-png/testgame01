@@ -28,6 +28,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.testgame01.model.GamePhase
 import com.example.testgame01.viewmodel.GameViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlin.math.sqrt
 
 private val BackgroundColor = Color(0xFF1A1A2E)
@@ -42,25 +43,21 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
     val measurer = rememberTextMeasurer()
     val density  = LocalDensity.current
 
-    // Measured pixel heights reported by the actual Composables
     var topBarPx    by remember { mutableStateOf(0f) }
     var bottomBarPx by remember { mutableStateOf(0f) }
     var canvasSizePx by remember { mutableStateOf(Size.Zero) }
 
-    // Whenever any measured dimension changes, update ViewModel
     LaunchedEffect(canvasSizePx, topBarPx, bottomBarPx) {
         if (canvasSizePx != Size.Zero && topBarPx > 0f && bottomBarPx > 0f) {
             viewModel.onCanvasReady(canvasSizePx, topBarPx, bottomBarPx)
         }
     }
 
-    // Game loop
-    LaunchedEffect(state.phase) {
-        if (state.phase == GamePhase.Shooting) {
-            while (viewModel.state.value.phase == GamePhase.Shooting) {
-                viewModel.tick()
-                delay(16L)
-            }
+    // یک loop ثابت — همیشه در حال اجراست و هر 16ms یه tick میزنه
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            viewModel.tick()
+            delay(16L)
         }
     }
 
@@ -70,7 +67,6 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
             .background(BackgroundColor)
             .windowInsetsPadding(WindowInsets.systemBars)
     ) {
-        // ---- Full-screen canvas underneath ----
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
@@ -97,9 +93,7 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
                     )
                 }
                 .onSizeChanged { intSize ->
-                    with(density) {
-                        canvasSizePx = Size(intSize.width.toFloat(), intSize.height.toFloat())
-                    }
+                    canvasSizePx = Size(intSize.width.toFloat(), intSize.height.toFloat())
                 }
         ) {
             val canvasW   = size.width
@@ -118,22 +112,22 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
                 drawAimLine(state.ballLaunchOrigin, state.aimDirection)
             }
 
-            // Moving balls
+            // توپ‌ها در حین شلیک — همه رو نشون بده به جز returned
             if (state.phase == GamePhase.Shooting) {
                 state.balls.forEach { ball ->
-                    if (ball.isMoving && !ball.isReturned)
+                    if (!ball.isReturned) {
                         drawBall(ball.position, viewModel.ballRadiusPublic)
+                    }
                 }
             }
 
-            // Static ball
+            // توپ ثابت هنگام Idle یا Aiming
             if (state.ballLaunchOrigin != Offset.Zero &&
                 (state.phase == GamePhase.Idle || state.phase == GamePhase.Aiming)) {
                 drawBall(state.ballLaunchOrigin, viewModel.ballRadiusPublic)
             }
         }
 
-        // ---- TOP HUD: measure its pixel height ----
         TopHud(
             score     = state.score,
             ballCount = state.ballCount,
@@ -147,7 +141,6 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
                 }
         )
 
-        // ---- BOTTOM BAR: measure its pixel height ----
         BottomBar(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -158,7 +151,6 @@ fun GameScreen(viewModel: GameViewModel = viewModel()) {
                 }
         )
 
-        // Game Over overlay
         if (state.phase == GamePhase.GameOver) {
             GameOverScreen(score = state.score, onRestart = { viewModel.restartGame() })
         }
@@ -253,7 +245,6 @@ fun TopHud(score: Int, ballCount: Int, turn: Int, modifier: Modifier = Modifier)
 
 @Composable
 fun BottomBar(modifier: Modifier = Modifier) {
-    // Visual anchor at the bottom — same height as the ball launch zone
     Box(
         modifier = modifier
             .background(BottomBarBg.copy(alpha = 0.6f))
